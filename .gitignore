@@ -1,0 +1,36 @@
+# Environment — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Spotify OAuth token cache
+.cache
+.cache-*
+
+# Database
+music.db
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

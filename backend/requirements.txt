@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+spotipy
+python-dotenv
+openai
+pydantic
+pydantic-settings
+sqlalchemy
+scikit-learn
+numpy
