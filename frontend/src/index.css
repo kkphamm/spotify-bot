@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --color-spotify-bg: #121212;
+  --color-spotify-card: #181818;
+  --color-spotify-green: #1DB954;
+  --color-spotify-green-hover: #1ed760;
+  --color-spotify-sidebar: #000000;
+  --color-spotify-text: #ffffff;
+  --color-spotify-muted: #b3b3b3;
+  --color-spotify-divider: #282828;
+  --color-spotify-highlight: #282828;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: #121212;
+  color: #ffffff;
+  font-family: 'Circular', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #535353;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #727272;
+}

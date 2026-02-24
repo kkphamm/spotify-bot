@@ -8,8 +8,8 @@ from pydantic import BaseModel
 
 from backend.spotify_client import SpotifyClient
 from backend.intent_engine import IntentEngine
-from backend.recommender import Recommender
-from backend.database import init_db
+from backend.database import init_db, get_session
+from backend.models import MoodRequest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,14 +113,6 @@ async def top_tracks(limit: int = 50, time_range: str = "medium_term"):
 
 
 
-@app.get("/search")
-async def search_tracks(query: str, limit: int = 10):
-    """Search for tracks on Spotify."""
-    spotify: SpotifyClient = app.state.spotify
-    results = spotify.search_track(query, limit=limit)
-    return {"query": query, "results": results}
-
-
 class PlayRequest(BaseModel):
     message: str
     device_id: str | None = None
@@ -132,12 +124,52 @@ class PlayRequest(BaseModel):
     }
 
 
+class PlayTrackRequest(BaseModel):
+    uri: str
+    device_id: str | None = None
+
+
+def _save_mood_request(
+    message: str,
+    intent: dict,
+    resolved_query: str | None = None,
+    *,
+    mode: str | None = None,
+) -> None:
+    """Persist a mood request to the database for the voice UI."""
+    action = mode if mode else intent.get("action")
+    try:
+        with get_session() as session:
+            session.add(MoodRequest(
+                user_id=None,
+                message=message,
+                resolved_action=action,
+                resolved_query=resolved_query,
+                intent_source=intent.get("source"),
+            ))
+    except Exception as exc:
+        logger.warning("Failed to save mood request: %s", exc)
+
+
 def _resolve_play_query(intent: dict, message: str) -> str:
     """Extract a usable search query from the intent, falling back to the raw message."""
     query = intent.get("query", "").strip()
     if not query or intent.get("action") == "unknown":
         return message.strip()
     return query
+
+
+@app.post("/play-track")
+async def play_track_by_uri(body: PlayTrackRequest):
+    """Play a specific track by Spotify URI (e.g. spotify:track:xxx)."""
+    spotify: SpotifyClient = app.state.spotify
+    if not body.uri or not body.uri.strip().startswith("spotify:track:"):
+        raise HTTPException(status_code=400, detail="Invalid track URI. Use spotify:track:xxx")
+    try:
+        ctx = spotify.play_uri(body.uri.strip(), device_id=body.device_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "playing", "uri": body.uri, **ctx}
 
 
 @app.post("/play")
@@ -185,7 +217,7 @@ async def play_track(body: PlayRequest):
         if is_diverse:
             # Genre/mood — queue everything, let Spotify shuffle
             ctx = spotify.play_multi_track(results, device_id=body.device_id)
-            return {
+            resp = {
                 "status": "playing",
                 "mode": "multi",
                 "track_count": ctx["track_count"],
@@ -197,7 +229,7 @@ async def play_track(body: PlayRequest):
         elif artist_named and not (track_name_words & query_words):
             # Only artist name in query — play full artist catalogue
             ctx = spotify.play_artist(track, device_id=body.device_id)
-            return {
+            resp = {
                 "status": "playing",
                 "mode": "artist",
                 "artist": track["artists"][0],
@@ -208,7 +240,7 @@ async def play_track(body: PlayRequest):
         else:
             # Specific song — play that track with shuffle on
             ctx = spotify.play_track(track, device_id=body.device_id)
-            return {
+            resp = {
                 "status": "playing",
                 "mode": "track",
                 "track": track["name"],
@@ -217,6 +249,9 @@ async def play_track(body: PlayRequest):
                 "shuffle": ctx["shuffle"],
                 "device_id": ctx["device_id"],
             }
+
+        _save_mood_request(body.message, intent, query, mode=resp.get("mode"))
+        return resp
 
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -235,73 +270,61 @@ async def ask(body: AskRequest):
         intent = intent_engine.parse(body.message)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    _save_mood_request(body.message, intent, intent.get("query"))
     return intent
 
 
-@app.get("/recommend")
-async def recommend(
-    top_n: int = 10,
-    top_tracks_limit: int = 20,
-    candidates_limit: int = 50,
-    time_range: str = "medium_term",
-):
+@app.get("/latest-command")
+async def get_latest_command():
     """
-    Return personalised track recommendations.
-
-    Steps:
-      1. Fetch the user's top tracks (taste signal)
-      2. Seed Spotify recommendations using top track IDs
-      3. Build TF-IDF + metadata feature vectors for all tracks
-      4. Rank candidates by cosine similarity to user's taste profile
-      5. Return top_n results
+    Return the most recent voice/text command (for frontend polling).
+    Shows what the user just said via voice or typed.
     """
-    spotify: SpotifyClient = app.state.spotify
+    from sqlalchemy import desc, select
 
-    try:
-        top_tracks = spotify.get_top_tracks(limit=top_tracks_limit, time_range=time_range)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not fetch top tracks: {exc}")
-
-    if not top_tracks:
-        raise HTTPException(status_code=404, detail="No top tracks found. Listen to more music first!")
-
-    # Collect unique artists from top tracks and search for their other songs
-    # (Spotify's /recommendations API is restricted for new apps since Nov 2024)
-    seen_artists: set[str] = set()
-    unique_artists: list[str] = []
-    for t in top_tracks:
-        for artist in t.get("artists", []):
-            if artist not in seen_artists:
-                seen_artists.add(artist)
-                unique_artists.append(artist)
-
-    top_ids = {t["id"] for t in top_tracks}
-    candidates: list[dict] = []
-    per_artist = max(1, candidates_limit // max(len(unique_artists), 1))
-
-    for artist in unique_artists[:10]:          # cap at 10 artists to stay fast
-        try:
-            results = spotify.search_track(f"artist:{artist}", limit=per_artist)
-            for track in results:
-                if track["id"] not in top_ids and track["id"] not in {c["id"] for c in candidates}:
-                    candidates.append(track)
-        except Exception:
-            continue
-
-    if not candidates:
-        raise HTTPException(status_code=404, detail="Could not gather candidate tracks.")
-
-    # Build taste profile and rank candidates
-    try:
-        recommender = Recommender()
-        recommender.build_profile(top_tracks)
-        ranked = recommender.rank_candidates(candidates, top_n=top_n)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Recommender error: {exc}")
-
+    with get_session() as session:
+        result = session.execute(
+            select(MoodRequest).order_by(desc(MoodRequest.created_at)).limit(1)
+        )
+        row = result.scalars().first()
+    if not row:
+        return {"latest": None}
     return {
-        "total": len(ranked),
-        "based_on": len(top_tracks),
-        "time_range": time_range,
-        "recommendations": ranked,
+        "latest": {
+            "id": row.id,
+            "message": row.message,
+            "resolved_action": row.resolved_action,
+            "resolved_query": row.resolved_query,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
     }
+
+
+@app.get("/mood-requests")
+async def get_mood_requests(limit: int = 5):
+    """
+    Return the latest mood requests (voice/text commands and their resolved intents).
+    Used by the frontend VoiceAssistant for real-time display.
+    """
+    from sqlalchemy import desc, select
+
+    with get_session() as session:
+        result = session.execute(
+            select(MoodRequest).order_by(desc(MoodRequest.created_at)).limit(limit)
+        )
+        items = result.scalars().all()
+    return {
+        "requests": [
+            {
+                "id": r.id,
+                "message": r.message,
+                "resolved_action": r.resolved_action,
+                "resolved_query": r.resolved_query,
+                "intent_source": r.intent_source,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in items
+        ],
+    }
+
+

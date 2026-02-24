@@ -98,6 +98,19 @@ class SpotifyClient:
     # Playback
     # ------------------------------------------------------------------
 
+    def play_uri(
+        self,
+        uri: str,
+        device_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Play a track directly by Spotify URI (e.g. spotify:track:xxx)."""
+        if not device_id or device_id.lower() == "string":
+            device_id = self._get_active_device_id()
+        self.client.start_playback(device_id=device_id, uris=[uri])
+        self.client.shuffle(state=True, device_id=device_id)
+        logger.info("Playing URI %s on device=%s", uri, device_id)
+        return {"mode": "track", "device_id": device_id, "shuffle": True}
+
     def play_track(
         self,
         track: dict[str, Any],
