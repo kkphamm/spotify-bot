@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiUrl } from '../api'
 
-const HOTKEY = 'Alt + S'
+const HOTKEY = 'Alt + Q'
 const POLL_INTERVAL_MS = 2500
 const PULSE_DURATION_MS = 5000  // Glow/pulse after command is sent
 const MIN_HOLD_MS = 200  // Ignore very short taps so mic doesn't stay open / no empty sends
@@ -22,6 +22,7 @@ export default function VoiceAssistant() {
   const transcriptRef = useRef('')
   const startStopRef = useRef({ start: null, stop: null })
   const hotkeyDownAtRef = useRef(0)
+  const stopRequestedRef = useRef(false)
 
   const handleMicClick = () => {
     const { start, stop } = startStopRef.current
@@ -29,6 +30,8 @@ export default function VoiceAssistant() {
     if (recognitionRef.current && startedByHoldRef.current) {
       stop()
     } else {
+      // Started via click, not hotkey — avoid onend auto-restart
+      hotkeyDownRef.current = false
       start()
     }
   }
@@ -38,6 +41,7 @@ export default function VoiceAssistant() {
       if (!SpeechRecognitionAPI || recognitionRef.current) return
       transcriptRef.current = ''
       hotkeyDownAtRef.current = Date.now()
+      stopRequestedRef.current = false
       const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
       const recognition = new Recognition()
       recognition.continuous = true
@@ -58,22 +62,32 @@ export default function VoiceAssistant() {
       }
       recognition.onend = () => {
         setBrowserListening(false)
-        if (!startedByHoldRef.current) return
-        startedByHoldRef.current = false
+
+        // If we didn't explicitly request a stop (via Alt+Q up or mic click),
+        // treat this as an unexpected end and immediately restart listening.
+        if (!stopRequestedRef.current) {
+          recognitionRef.current = null
+          startListening()
+          return
+        }
+
         recognitionRef.current = null
         const transcript = transcriptRef.current.trim()
         const holdDuration = Date.now() - hotkeyDownAtRef.current
         if (transcript) {
           sendToPlay(transcript)
         } else if (holdDuration < MIN_HOLD_MS) {
-          // Very short tap: don't send empty command, mic already closed by stop()
+          // Very short tap: don't send empty command.
         }
       }
       recognition.onerror = (e) => {
         setBrowserListening(false)
-        startedByHoldRef.current = false
-        if (e.error === 'not-allowed') setError('Microphone access denied.')
-        else if (e.error !== 'aborted') setError('Speech recognition error.')
+        // Only surface hard errors; ignore transient ones while the hotkey/click is held.
+        if (e.error === 'not-allowed') {
+          setError('Microphone access denied.')
+        } else if (e.error !== 'aborted' && stopRequestedRef.current) {
+          setError('Speech recognition error.')
+        }
       }
 
       recognitionRef.current = recognition
@@ -86,6 +100,7 @@ export default function VoiceAssistant() {
     }
 
     function stopListening() {
+      stopRequestedRef.current = true
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop()
@@ -100,42 +115,59 @@ export default function VoiceAssistant() {
     }
 
     function onKeyDown(e) {
-      if ((e.key === 's' || e.key === 'S') && e.altKey) {
+      const isAltQ =
+        (e.key === 'q' || e.key === 'Q') && e.altKey
+      if (isAltQ) {
+        // Always prevent the browser's default Alt+Q behavior
         e.preventDefault()
         e.stopPropagation()
-        if (hotkeyDownRef.current) return // key repeat
-        hotkeyDownRef.current = true
-        startListening()
+
+        // If we don't have Electron (pure web), fall back to in-window handling
+        if (!window.electronAPI) {
+          if (hotkeyDownRef.current) return // key repeat
+          hotkeyDownRef.current = true
+          startListening()
+        }
       }
     }
 
     function onKeyUp(e) {
-      if ((e.key === 's' || e.key === 'S') || e.key === 'Alt') {
-        if (recognitionRef.current && startedByHoldRef.current) {
-          stopListening()
-        } else {
-          hotkeyDownRef.current = false
+      const isQ = e.key === 'q' || e.key === 'Q'
+      const isAlt = e.key === 'Alt'
+      if (isQ || isAlt) {
+        if (!window.electronAPI) {
+          if (recognitionRef.current && startedByHoldRef.current) {
+            stopListening()
+          } else {
+            hotkeyDownRef.current = false
+          }
         }
       }
     }
 
     startStopRef.current = { start: startListening, stop: stopListening }
 
-    window.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('keyup', onKeyUp, true)
-
+    // Global Electron hotkey (preferred)
+    let offHotkeyDown
+    let offHotkeyUp
     if (window.electronAPI?.onHotkeyDown) {
-      window.electronAPI.onHotkeyDown(() => {
+      offHotkeyDown = window.electronAPI.onHotkeyDown(() => {
+        hotkeyDownRef.current = true
         const { start } = startStopRef.current
         if (start) start()
       })
     }
     if (window.electronAPI?.onHotkeyUp) {
-      window.electronAPI.onHotkeyUp(() => {
+      offHotkeyUp = window.electronAPI.onHotkeyUp(() => {
+        hotkeyDownRef.current = false
         const { stop } = startStopRef.current
         if (stop) stop()
       })
     }
+
+    // Browser key events as fallback (and to suppress Alt+Q default)
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
 
     // Pre-request mic permission on first interaction (helps Web Speech API work from global hotkey)
     const requestMic = async () => {
@@ -151,12 +183,14 @@ export default function VoiceAssistant() {
     return () => {
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('keyup', onKeyUp, true)
+      if (offHotkeyDown) offHotkeyDown()
+      if (offHotkeyUp) offHotkeyUp()
       document.removeEventListener('click', onFirstInteraction)
       document.removeEventListener('keydown', onFirstInteraction)
       if (recognitionRef.current) {
         try { recognitionRef.current.abort() } catch (_) {}
       }
-      startStopRef.current = { start: null, stop: null }
+      // Keep start/stop in ref so mic click still works if effect re-runs (e.g. Strict Mode)
     }
   }, [])
 
@@ -251,7 +285,7 @@ export default function VoiceAssistant() {
             <line x1="8" y1="23" x2="16" y2="23" />
           </svg>
           {showListening && (
-            <span className="absolute inset-0 rounded-full border-2 border-[#1DB954] animate-ping opacity-30" aria-hidden />
+            <span className="absolute inset-0 rounded-full border-2 border-[#1DB954] animate-ping opacity-30 pointer-events-none" aria-hidden />
           )}
         </button>
 
@@ -261,8 +295,8 @@ export default function VoiceAssistant() {
           </p>
           <p className="text-[#b3b3b3] text-sm">
             {browserListening
-              ? 'Say your command, then release Alt+S'
-              : 'Hold Alt+S while you speak, then release to send. Or click the mic.'}
+              ? 'Say your command, then release Alt+Q'
+              : 'Hold Alt+Q while you speak, then release to send. Or click the mic.'}
           </p>
           {!SpeechRecognitionAPI && (
             <p className="text-amber-400 text-xs mt-2">Use Chrome or Edge for voice.</p>
@@ -282,7 +316,7 @@ export default function VoiceAssistant() {
 
         {requests.length === 0 ? (
           <p className="text-[#535353] text-sm italic">
-            Hold Alt+S to speak, or click the mic.
+            Hold Alt+Q to speak, or click the mic.
           </p>
         ) : (
           <ul className="space-y-3 sm:space-y-4">

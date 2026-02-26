@@ -6,20 +6,20 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let mainWindow = null
 let tray = null
-let altSDown = false
+let isHotkeyDown = false
 
-const WINDOW_WIDTH = 400
+const WINDOW_WIDTH = 480
 const WINDOW_HEIGHT = 640
 
-function isAltS(event) {
-  return event.keycode === UiohookKey.S && event.altKey
+function isAltQ(event) {
+  return event.keycode === UiohookKey.Q && event.altKey
 }
 
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
-    minWidth: 340,
+    minWidth: 408,
     minHeight: 500,
     backgroundColor: '#121212',
     webPreferences: {
@@ -79,9 +79,10 @@ function createTray() {
 
 function registerHoldToTalkHotkey() {
   uIOhook.on('keydown', (e) => {
-    if (!isAltS(e)) return
-    if (altSDown) return // key repeat
-    altSDown = true
+    console.log('uiohook keydown', e)
+    if (!isAltQ(e)) return
+    if (isHotkeyDown) return // key repeat
+    isHotkeyDown = true
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('hotkey-down')
@@ -89,11 +90,12 @@ function registerHoldToTalkHotkey() {
   })
 
   uIOhook.on('keyup', (e) => {
-    const isSWithAlt = e.keycode === UiohookKey.S && e.altKey
+    console.log('uiohook keyup', e)
+    if (!isHotkeyDown) return
+    const isQKey = e.keycode === UiohookKey.Q
     const isAltKey = e.keycode === UiohookKey.Alt || e.keycode === UiohookKey.AltRight
-    if (!altSDown) return
-    if (!isSWithAlt && !isAltKey) return
-    altSDown = false
+    if (!isQKey && !isAltKey) return
+    isHotkeyDown = false
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('hotkey-up')

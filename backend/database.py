@@ -15,7 +15,14 @@ engine = create_engine(
     echo=False,
 )
 
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+# expire_on_commit=False so ORM objects keep their loaded attributes
+# even after the session commits and closes (important for FastAPI responses).
+SessionLocal = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
 
 
 class Base(DeclarativeBase):

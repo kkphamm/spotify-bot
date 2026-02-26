@@ -194,14 +194,19 @@ class SpotifyClient:
     @staticmethod
     def _format_track(track: dict[str, Any]) -> dict[str, Any]:
         artists_raw = track.get("artists", [])
-        album_raw = track.get("album", {})
+        album_raw = track.get("album", {}) or {}
+        album_images = album_raw.get("images", [])
         result = {
             "id": track["id"],
             "name": track["name"],
             "uri": track.get("uri"),
             "artists": [a["name"] for a in artists_raw],
             "artist_uris": [a["uri"] for a in artists_raw if a.get("uri")],
-            "album": album_raw.get("name"),
+            "album": {
+                "name": album_raw.get("name"),
+                "uri": album_raw.get("uri"),
+                "images": [{"url": img.get("url"), "height": img.get("height"), "width": img.get("width")} for img in album_images],
+            },
             "album_uri": album_raw.get("uri"),
             "duration_ms": track.get("duration_ms"),
             "external_url": track.get("external_urls", {}).get("spotify"),
