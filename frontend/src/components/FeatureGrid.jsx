@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { apiUrl } from '../api'
 
 export default function FeatureGrid() {
   const [authStatus, setAuthStatus] = useState(null)  // true | false | null (loading)
@@ -12,7 +13,7 @@ export default function FeatureGrid() {
   useEffect(() => {
     async function checkAuth() {
       try {
-        const res = await fetch('/api/me')
+        const res = await fetch(apiUrl('me'))
         setAuthStatus(res.ok)
       } catch {
         setAuthStatus(false)
@@ -25,7 +26,7 @@ export default function FeatureGrid() {
     async function fetchDevices() {
       setDevicesLoading(true)
       try {
-        const res = await fetch('/api/devices')
+        const res = await fetch(apiUrl('devices'))
         const data = await res.json()
         setDevices(data.devices ?? [])
       } catch {
@@ -44,7 +45,7 @@ export default function FeatureGrid() {
     setIntentError(null)
     setIntentResult(null)
     try {
-      const res = await fetch('/api/play', {
+        const res = await fetch(apiUrl('play'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: intentInput.trim() }),
@@ -136,13 +137,13 @@ export default function FeatureGrid() {
   ]
 
   return (
-    <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+    <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
       {cards.map(({ title, body }) => (
         <article
           key={title}
-          className="bg-[#181818] rounded-xl p-5 border border-[#282828] hover:bg-[#1a1a1a] transition-colors"
+          className="bg-[#181818] rounded-lg sm:rounded-xl p-4 sm:p-5 border border-[#282828] hover:bg-[#1a1a1a] transition-colors"
         >
-          <h3 className="text-white font-bold text-sm mb-4">{title}</h3>
+          <h3 className="text-white font-bold text-sm mb-3 sm:mb-4">{title}</h3>
           {body}
         </article>
       ))}

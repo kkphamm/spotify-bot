@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { apiUrl } from '../api'
 
-const HOTKEY = 'Ctrl + Shift + L'
+const HOTKEY = 'Alt + S'
 const POLL_INTERVAL_MS = 2500
 const PULSE_DURATION_MS = 5000  // Glow/pulse after command is sent
+const MIN_HOLD_MS = 200  // Ignore very short taps so mic doesn't stay open / no empty sends
 
 const SpeechRecognitionAPI =
   typeof window !== 'undefined' &&
@@ -18,11 +20,24 @@ export default function VoiceAssistant() {
   const startedByHoldRef = useRef(false)
   const hotkeyDownRef = useRef(false)
   const transcriptRef = useRef('')
+  const startStopRef = useRef({ start: null, stop: null })
+  const hotkeyDownAtRef = useRef(0)
+
+  const handleMicClick = () => {
+    const { start, stop } = startStopRef.current
+    if (!start || !stop) return
+    if (recognitionRef.current && startedByHoldRef.current) {
+      stop()
+    } else {
+      start()
+    }
+  }
 
   useEffect(() => {
     function startListening() {
       if (!SpeechRecognitionAPI || recognitionRef.current) return
       transcriptRef.current = ''
+      hotkeyDownAtRef.current = Date.now()
       const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
       const recognition = new Recognition()
       recognition.continuous = true
@@ -47,7 +62,12 @@ export default function VoiceAssistant() {
         startedByHoldRef.current = false
         recognitionRef.current = null
         const transcript = transcriptRef.current.trim()
-        if (transcript) sendToPlay(transcript)
+        const holdDuration = Date.now() - hotkeyDownAtRef.current
+        if (transcript) {
+          sendToPlay(transcript)
+        } else if (holdDuration < MIN_HOLD_MS) {
+          // Very short tap: don't send empty command, mic already closed by stop()
+        }
       }
       recognition.onerror = (e) => {
         setBrowserListening(false)
@@ -66,16 +86,21 @@ export default function VoiceAssistant() {
     }
 
     function stopListening() {
-      if (recognitionRef.current && startedByHoldRef.current) {
+      if (recognitionRef.current) {
         try {
           recognitionRef.current.stop()
-        } catch (_) {}
+        } catch (_) {
+          try {
+            recognitionRef.current.abort()
+          } catch (_) {}
+        }
+        recognitionRef.current = null
       }
       hotkeyDownRef.current = false
     }
 
     function onKeyDown(e) {
-      if (e.key === 'L' && e.ctrlKey && e.shiftKey) {
+      if ((e.key === 's' || e.key === 'S') && e.altKey) {
         e.preventDefault()
         e.stopPropagation()
         if (hotkeyDownRef.current) return // key repeat
@@ -85,7 +110,7 @@ export default function VoiceAssistant() {
     }
 
     function onKeyUp(e) {
-      if (e.key === 'L' || e.key === 'Control' || e.key === 'Shift') {
+      if ((e.key === 's' || e.key === 'S') || e.key === 'Alt') {
         if (recognitionRef.current && startedByHoldRef.current) {
           stopListening()
         } else {
@@ -94,14 +119,44 @@ export default function VoiceAssistant() {
       }
     }
 
-    window.addEventListener('keydown', onKeyDown, true)  // capture phase to run before browser shortcuts
+    startStopRef.current = { start: startListening, stop: stopListening }
+
+    window.addEventListener('keydown', onKeyDown, true)
     window.addEventListener('keyup', onKeyUp, true)
+
+    if (window.electronAPI?.onHotkeyDown) {
+      window.electronAPI.onHotkeyDown(() => {
+        const { start } = startStopRef.current
+        if (start) start()
+      })
+    }
+    if (window.electronAPI?.onHotkeyUp) {
+      window.electronAPI.onHotkeyUp(() => {
+        const { stop } = startStopRef.current
+        if (stop) stop()
+      })
+    }
+
+    // Pre-request mic permission on first interaction (helps Web Speech API work from global hotkey)
+    const requestMic = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        stream.getTracks().forEach((t) => t.stop())
+      } catch (_) {}
+    }
+    const onFirstInteraction = () => requestMic()
+    document.addEventListener('click', onFirstInteraction, { once: true })
+    document.addEventListener('keydown', onFirstInteraction, { once: true })
+
     return () => {
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('keyup', onKeyUp, true)
+      document.removeEventListener('click', onFirstInteraction)
+      document.removeEventListener('keydown', onFirstInteraction)
       if (recognitionRef.current) {
         try { recognitionRef.current.abort() } catch (_) {}
       }
+      startStopRef.current = { start: null, stop: null }
     }
   }, [])
 
@@ -110,7 +165,7 @@ export default function VoiceAssistant() {
 
     async function poll() {
       try {
-        const res = await fetch('/api/mood-requests?limit=3')
+        const res = await fetch(apiUrl('mood-requests?limit=3'))
         if (!res.ok) return
         const data = await res.json()
         const items = data.requests ?? []
@@ -139,7 +194,7 @@ export default function VoiceAssistant() {
     setSending(true)
     setError(null)
     try {
-      const res = await fetch('/api/play', {
+      const res = await fetch(apiUrl('play'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text.trim() }),
@@ -150,6 +205,17 @@ export default function VoiceAssistant() {
       setTimeout(() => setProcessing(false), PULSE_DURATION_MS)
       const newReq = { message: text.trim(), resolved_action: data.mode, resolved_query: data.track || data.artist, created_at: new Date().toISOString() }
       setRequests((prev) => [newReq, ...prev.slice(0, 2)])
+      if (window.electronAPI?.sendCommandProcessed) {
+        const resolved =
+          data.mode === 'track' && data.track
+            ? `Playing: ${data.track}`
+            : data.mode === 'artist' && data.artist
+              ? `Artist mix: ${data.artist}`
+              : data.mode === 'multi'
+                ? 'Playing mix'
+                : data.track || data.artist || data.mode || 'Done'
+        window.electronAPI.sendCommandProcessed(resolved)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -160,19 +226,22 @@ export default function VoiceAssistant() {
   const showListening = processing || browserListening
 
   return (
-    <section className="bg-[#181818] rounded-2xl p-8 mb-8 border border-[#282828]">
+    <section className="bg-[#181818] rounded-xl sm:rounded-2xl p-5 sm:p-8 mb-5 sm:mb-8 border border-[#282828]">
       {/* Prominent hotkey call-to-action */}
-      <div className="flex flex-col items-center gap-6 text-center mb-8">
-        <div
-          className={`relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-500 ${
+      <div className="flex flex-col items-center gap-4 sm:gap-6 text-center mb-5 sm:mb-8">
+        <button
+          type="button"
+          onClick={handleMicClick}
+          className={`relative w-16 h-16 sm:w-24 sm:h-24 rounded-full flex items-center justify-center transition-all duration-500 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#1DB954] focus:ring-offset-2 focus:ring-offset-[#181818] ${
             showListening
               ? 'bg-[#1DB954]/40 shadow-[0_0_30px_rgba(29,185,84,0.6)] animate-pulse'
-              : 'bg-[#282828]'
+              : 'bg-[#282828] hover:bg-[#333]'
           }`}
+          aria-label={showListening ? 'Stop listening' : 'Start listening'}
         >
           <svg
             viewBox="0 0 24 24"
-            className={`w-12 h-12 flex-shrink-0 ${
+            className={`w-8 h-8 sm:w-12 sm:h-12 flex-shrink-0 ${
               showListening ? 'fill-[#1DB954] stroke-[#1DB954]' : 'fill-none stroke-[#b3b3b3] stroke-2'
             }`}
           >
@@ -184,16 +253,16 @@ export default function VoiceAssistant() {
           {showListening && (
             <span className="absolute inset-0 rounded-full border-2 border-[#1DB954] animate-ping opacity-30" aria-hidden />
           )}
-        </div>
+        </button>
 
         <div>
-          <p className="text-white text-2xl font-bold mb-1">
+          <p className="text-white text-lg sm:text-2xl font-bold mb-1">
             {browserListening ? 'Listening…' : sending ? 'Playing…' : `Hold ${HOTKEY} to speak`}
           </p>
           <p className="text-[#b3b3b3] text-sm">
             {browserListening
-              ? 'Say your command, then release the keys'
-              : 'Hold the keys while you speak, then release to send'}
+              ? 'Say your command, then release Alt+S'
+              : 'Hold Alt+S while you speak, then release to send. Or click the mic.'}
           </p>
           {!SpeechRecognitionAPI && (
             <p className="text-amber-400 text-xs mt-2">Use Chrome or Edge for voice.</p>
@@ -202,7 +271,7 @@ export default function VoiceAssistant() {
       </div>
 
       {/* Last 3 Voice Commands */}
-      <div className="border-t border-[#282828] pt-6">
+      <div className="border-t border-[#282828] pt-4 sm:pt-6">
         <h3 className="text-white font-semibold mb-4 text-sm uppercase tracking-widest text-[#b3b3b3]">
           Recent Commands
         </h3>
@@ -212,11 +281,13 @@ export default function VoiceAssistant() {
         )}
 
         {requests.length === 0 ? (
-          <p className="text-[#535353] text-sm italic">Hold Ctrl+Shift+L to speak a command.</p>
+          <p className="text-[#535353] text-sm italic">
+            Hold Alt+S to speak, or click the mic.
+          </p>
         ) : (
-          <ul className="space-y-4">
+          <ul className="space-y-3 sm:space-y-4">
             {requests.slice(0, 3).map((cmd, i) => (
-              <li key={cmd.id ?? i} className="border-b border-[#282828] pb-4 last:border-0 last:pb-0">
+              <li key={cmd.id ?? i} className="border-b border-[#282828] pb-3 sm:pb-4 last:border-0 last:pb-0">
                 <p className="text-white font-medium">{cmd.message}</p>
                 <p className="text-[#1DB954] text-sm mt-0.5">
                   {cmd.resolved_action ?? '—'}

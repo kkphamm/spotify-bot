@@ -14,11 +14,18 @@ pip install -r backend/requirements.txt
 # 3. Start the backend
 uvicorn backend.main:app --reload
 
-# 4. In another terminal, start the frontend
-cd frontend && npm install && npm run dev
+# 4. In another terminal, start the frontend (web or desktop app)
+cd frontend && npm install
+
+# Web:
+npm run dev
+# Then visit http://localhost:5173
+
+# Windows desktop app (runs in background, system tray):
+npm run electron:dev
 ```
 
-Then visit **http://localhost:5173** and **http://localhost:8000/auth** to log in with Spotify. Use **Ctrl+Shift+L** to speak (website or voice client).
+Visit **http://localhost:8000/auth** to log in with Spotify. Use **Alt+S** to speak — in the desktop app hold it globally (even when the window is closed).
 
 ---
 
@@ -74,7 +81,8 @@ flowchart LR
 
 | Method | How |
 |--------|-----|
-| **Website** | Hold **Ctrl+Shift+L** while speaking, then release. (Chrome/Edge) |
+| **Desktop app (Windows)** | Hold **Alt+S** anywhere to speak; release to send. Runs in system tray. |
+| **Website** | Hold **Alt+S** while speaking, then release. (Chrome/Edge) |
 | **Terminal** | Run `python -X utf8 voice_client.py`, then press Enter or **Ctrl+Shift+L** to record. |
 
 The website uses the browser’s Speech Recognition API; the terminal client uses Whisper.
@@ -111,7 +119,8 @@ ai_music_assistant/
 │   ├── spotify_client.py # Spotify API
 │   ├── intent_engine.py  # OpenAI intent parser
 │   └── ...
-├── frontend/             # React + Tailwind
+├── frontend/             # React + Tailwind + Electron
+│   ├── electron/         # Main process, preload, global hotkey
 │   ├── src/
 │   │   ├── components/   # VoiceAssistant, FeatureGrid, Sidebar
 │   │   └── pages/        # Home, Top Tracks, Voice Control
@@ -138,5 +147,5 @@ ai_music_assistant/
 ## Tech Stack
 
 - **Backend:** FastAPI, Spotipy, OpenAI, SQLAlchemy
-- **Frontend:** React, Vite, Tailwind
+- **Frontend:** React, Vite, Tailwind, Electron (Windows desktop)
 - **Voice:** Web Speech API (browser), OpenAI Whisper (terminal)
