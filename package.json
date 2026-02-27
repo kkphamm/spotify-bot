@@ -1,0 +1,9 @@
+{
+  "name": "ai-music-assistant-root",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI Music Assistant — root workspace",
+  "scripts": {
+    "dev": "npx concurrently --names \"backend,frontend\" --prefix-colors \"blue,green\" \"uvicorn backend.main:app --reload\" \"npm run electron:dev --prefix frontend\""
+  }
+}

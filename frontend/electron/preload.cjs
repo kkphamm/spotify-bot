@@ -2,15 +2,18 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   onHotkeyDown: (callback) => {
-    ipcRenderer.on('hotkey-down', callback)
-    return () => ipcRenderer.removeListener('hotkey-down', callback)
+    const handler = () => callback()
+    ipcRenderer.on('hotkey-down', handler)
+    return () => ipcRenderer.removeListener('hotkey-down', handler)
   },
   onHotkeyUp: (callback) => {
-    ipcRenderer.on('hotkey-up', callback)
-    return () => ipcRenderer.removeListener('hotkey-up', callback)
+    const handler = () => callback()
+    ipcRenderer.on('hotkey-up', handler)
+    return () => ipcRenderer.removeListener('hotkey-up', handler)
   },
   sendCommandProcessed: (resolvedAction) => {
     ipcRenderer.send('command-processed', resolvedAction)
   },
+  logToTerminal: (message) => ipcRenderer.send('log-to-terminal', message),
   isElectron: true,
 })

@@ -1,19 +1,15 @@
-const { app, BrowserWindow, Tray, nativeImage, Menu, ipcMain, Notification } = require('electron')
+const { app, BrowserWindow, Tray, nativeImage, Menu, ipcMain, Notification, session } = require('electron')
 const path = require('path')
 const { uIOhook, UiohookKey } = require('uiohook-napi')
-
-const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let mainWindow = null
 let tray = null
 let isHotkeyDown = false
+let isCtrlDown = false
+let isShiftDown = false
 
 const WINDOW_WIDTH = 480
 const WINDOW_HEIGHT = 640
-
-function isAltQ(event) {
-  return event.keycode === UiohookKey.Q && event.altKey
-}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -45,11 +41,7 @@ function createWindow() {
     mainWindow = null
   })
 
-  if (isDev) {
-    mainWindow.loadURL('http://localhost:5173')
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
-  }
+  mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
 }
 
 function createTray() {
@@ -79,26 +71,45 @@ function createTray() {
 
 function registerHoldToTalkHotkey() {
   uIOhook.on('keydown', (e) => {
-    console.log('uiohook keydown', e)
-    if (!isAltQ(e)) return
-    if (isHotkeyDown) return // key repeat
-    isHotkeyDown = true
+    console.log('uiohook keydown', e.keycode)
 
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('hotkey-down')
+    // Track modifier state
+    if (e.keycode === UiohookKey.Ctrl || e.keycode === UiohookKey.CtrlRight) {
+      isCtrlDown = true
+    }
+    if (e.keycode === UiohookKey.Shift || e.keycode === UiohookKey.ShiftRight) {
+      isShiftDown = true
+    }
+
+    // Fire hotkey when Ctrl + Shift + Space are all down
+    if (e.keycode === UiohookKey.Space && isCtrlDown && isShiftDown) {
+      if (isHotkeyDown) return // key repeat
+      isHotkeyDown = true
+      console.log('hotkey-down: Ctrl+Shift+Space')
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('hotkey-down')
+      }
     }
   })
 
   uIOhook.on('keyup', (e) => {
-    console.log('uiohook keyup', e)
-    if (!isHotkeyDown) return
-    const isQKey = e.keycode === UiohookKey.Q
-    const isAltKey = e.keycode === UiohookKey.Alt || e.keycode === UiohookKey.AltRight
-    if (!isQKey && !isAltKey) return
-    isHotkeyDown = false
+    console.log('uiohook keyup', e.keycode)
 
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('hotkey-up')
+    const isSpace = e.keycode === UiohookKey.Space
+    const isCtrl = e.keycode === UiohookKey.Ctrl || e.keycode === UiohookKey.CtrlRight
+    const isShift = e.keycode === UiohookKey.Shift || e.keycode === UiohookKey.ShiftRight
+
+    // Reset modifier state
+    if (isCtrl) isCtrlDown = false
+    if (isShift) isShiftDown = false
+
+    // Release hotkey if any of the three keys is lifted while hotkey was held
+    if (isHotkeyDown && (isSpace || isCtrl || isShift)) {
+      isHotkeyDown = false
+      console.log('hotkey-up: Ctrl+Shift+Space released')
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('hotkey-up')
+      }
     }
   })
 
@@ -122,9 +133,21 @@ function registerIpcHandlers() {
   ipcMain.on('command-processed', (_event, resolvedAction) => {
     showCommandToast(resolvedAction)
   })
+  ipcMain.on('log-to-terminal', (_event, message) => {
+    console.log(message)
+  })
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'media') {
+      callback(true)
+    } else {
+      callback(false)
+    }
+  })
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => permission === 'media')
+
   createWindow()
   createTray()
   registerHoldToTalkHotkey()

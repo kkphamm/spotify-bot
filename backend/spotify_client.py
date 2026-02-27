@@ -75,6 +75,39 @@ class SpotifyClient:
         logger.info("Search '%s' returned %d result(s).", query, len(tracks))
         return [self._format_track(t) for t in tracks]
 
+    def search_playlists(self, query: str, limit: int = 1) -> list[str]:
+        """
+        Search Spotify for playlists matching the query and return track URIs
+        from the first matching playlist.
+        """
+        response = self.client.search(q=query, type="playlist", limit=limit)
+        playlists = response.get("playlists", {}).get("items", [])
+        if not playlists:
+            logger.info("Playlist search '%s' returned no results.", query)
+            return []
+
+        playlist = playlists[0]
+        playlist_id = playlist.get("id")
+        if not playlist_id:
+            return []
+
+        tracks_resp = self.client.playlist_items(playlist_id, limit=100)
+        items = tracks_resp.get("items", [])
+        uris: list[str] = []
+        for item in items:
+            track = item.get("track") or {}
+            uri = track.get("uri")
+            if uri:
+                uris.append(uri)
+
+        logger.info(
+            "Playlist search '%s' using playlist '%s' yielded %d track URIs.",
+            query,
+            playlist.get("name"),
+            len(uris),
+        )
+        return uris
+
     def get_top_tracks(
         self,
         limit: int = 50,
@@ -103,10 +136,28 @@ class SpotifyClient:
         uri: str,
         device_id: str | None = None,
     ) -> dict[str, Any]:
-        """Play a track directly by Spotify URI (e.g. spotify:track:xxx)."""
+        """Play a track directly by Spotify URI (e.g. spotify:track:xxx) with album context for autoplay."""
         if not device_id or device_id.lower() == "string":
             device_id = self._get_active_device_id()
-        self.client.start_playback(device_id=device_id, uris=[uri])
+
+        # Try to fetch album context so Spotify can autoplay subsequent tracks naturally.
+        album_uri: str | None = None
+        try:
+            track = self.client.track(uri)
+            album_uri = (track.get("album") or {}).get("uri")
+            uri = track.get("uri") or uri
+        except Exception:
+            logger.warning("Failed to fetch track metadata for %s; falling back to single-track playback.", uri)
+
+        if album_uri:
+            self.client.start_playback(
+                device_id=device_id,
+                context_uri=album_uri,
+                offset={"uri": uri},
+            )
+        else:
+            self.client.start_playback(device_id=device_id, uris=[uri])
+
         self.client.shuffle(state=True, device_id=device_id)
         logger.info("Playing URI %s on device=%s", uri, device_id)
         return {"mode": "track", "device_id": device_id, "shuffle": True}
@@ -116,16 +167,41 @@ class SpotifyClient:
         track: dict[str, Any],
         device_id: str | None = None,
     ) -> dict[str, Any]:
-        """Play a single track URI with shuffle on."""
+        """
+        Play the requested track followed by 30 similar recommendations (radio-style autoplay).
+        Shuffle is off so the requested song always plays first.
+        """
         if not device_id or device_id.lower() == "string":
             device_id = self._get_active_device_id()
 
-        self.client.start_playback(device_id=device_id, uris=[track["uri"]])
-        self.client.shuffle(state=True, device_id=device_id)
+        uri = track.get("uri")
+        track_id = track.get("id")
+        uris = [uri] if uri else []
+
+        # Build a queue: requested track + up to 30 Spotify recommendations
+        if track_id:
+            try:
+                recs = self.client.recommendations(seed_tracks=[track_id], limit=30)
+                rec_uris = [
+                    t["uri"]
+                    for t in recs.get("tracks", [])
+                    if t.get("uri") and t["uri"] != uri
+                ]
+                uris = uris + rec_uris
+                logger.info(
+                    "Recommendations for '%s': %d tracks queued.",
+                    track.get("name"), len(rec_uris),
+                )
+            except Exception as exc:
+                logger.warning("Recommendations API failed for %r: %s — playing track alone.", track_id, exc)
+
+        self.client.start_playback(device_id=device_id, uris=uris)
+        # Shuffle OFF so the requested track always plays first
+        self.client.shuffle(state=False, device_id=device_id)
 
         logger.info("Playing track: '%s' by %s on device=%s",
-                    track["name"], track.get("artists"), device_id)
-        return {"mode": "track", "device_id": device_id, "shuffle": True}
+                    track.get("name"), track.get("artists"), device_id)
+        return {"mode": "track", "device_id": device_id, "shuffle": False}
 
     def play_artist(
         self,
@@ -148,20 +224,40 @@ class SpotifyClient:
 
     def play_multi_track(
         self,
-        tracks: list[dict[str, Any]],
+        tracks: list[dict[str, Any]] | list[str],
         device_id: str | None = None,
     ) -> dict[str, Any]:
-        """Queue and play a list of tracks from multiple artists (genre/mood searches)."""
+        """
+        Queue and play a list of tracks from multiple artists (genre/mood searches).
+
+        Accepts either:
+        - a list of formatted track dicts (from search_track / get_top_tracks), or
+        - a list of raw track URIs (e.g. from a playlist).
+        """
         if not device_id or device_id.lower() == "string":
             device_id = self._get_active_device_id()
 
-        uris = [t["uri"] for t in tracks if t.get("uri")]
-        self.client.start_playback(device_id=device_id, uris=uris)
-        self.client.shuffle(state=True, device_id=device_id)
+        if not tracks:
+            uris: list[str] = []
+            unique_artists: list[str] = []
+        elif isinstance(tracks[0], str):
+            # Playlist-based: we only know URIs, not artist names.
+            uris = [u for u in tracks if u]
+            unique_artists = []
+        else:
+            uris = [t["uri"] for t in tracks if t.get("uri")]
+            unique_artists = list({a for t in tracks for a in t.get("artists", [])})
 
-        unique_artists = list({a for t in tracks for a in t.get("artists", [])})
-        logger.info("Multi-track: %d tracks, %d artists on device=%s",
-                    len(uris), len(unique_artists), device_id)
+        if uris:
+            self.client.start_playback(device_id=device_id, uris=uris)
+            self.client.shuffle(state=True, device_id=device_id)
+
+        logger.info(
+            "Multi-track: %d tracks, %d artists on device=%s",
+            len(uris),
+            len(unique_artists),
+            device_id,
+        )
         return {
             "mode": "multi",
             "device_id": device_id,

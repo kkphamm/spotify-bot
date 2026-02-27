@@ -1,14 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiUrl } from '../api'
 
-const HOTKEY = 'Alt + Q'
+const HOTKEY = 'Ctrl + Shift + Space'
 const POLL_INTERVAL_MS = 2500
 const PULSE_DURATION_MS = 5000  // Glow/pulse after command is sent
-const MIN_HOLD_MS = 200  // Ignore very short taps so mic doesn't stay open / no empty sends
-
-const SpeechRecognitionAPI =
-  typeof window !== 'undefined' &&
-  (window.SpeechRecognition || window.webkitSpeechRecognition)
 
 export default function VoiceAssistant() {
   const [requests, setRequests] = useState([])
@@ -16,113 +11,144 @@ export default function VoiceAssistant() {
   const [browserListening, setBrowserListening] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
-  const recognitionRef = useRef(null)
   const startedByHoldRef = useRef(false)
   const hotkeyDownRef = useRef(false)
-  const transcriptRef = useRef('')
   const startStopRef = useRef({ start: null, stop: null })
-  const hotkeyDownAtRef = useRef(0)
-  const stopRequestedRef = useRef(false)
+  const canvasRef = useRef(null)
+  const requestRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const analyserRef = useRef(null)
+  const mediaStreamRef = useRef(null)
+  const bufferRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef = useRef([])
 
   const handleMicClick = () => {
     const { start, stop } = startStopRef.current
     if (!start || !stop) return
-    if (recognitionRef.current && startedByHoldRef.current) {
+    if (mediaRecorderRef.current?.state === 'recording' && startedByHoldRef.current) {
       stop()
     } else {
-      // Started via click, not hotkey — avoid onend auto-restart
       hotkeyDownRef.current = false
       start()
     }
   }
 
   useEffect(() => {
-    function startListening() {
-      if (!SpeechRecognitionAPI || recognitionRef.current) return
-      transcriptRef.current = ''
-      hotkeyDownAtRef.current = Date.now()
-      stopRequestedRef.current = false
-      const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      const recognition = new Recognition()
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.lang = 'en-US'
+    async function sendAudioToWhisper(blob) {
+      setSending(true)
+      try {
+        const formData = new FormData()
+        formData.append('file', blob, 'voice.webm')
+        const res = await fetch(apiUrl('transcribe'), {
+          method: 'POST',
+          body: formData,
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.detail ?? data.message ?? 'Transcription failed')
+        const text = (data.text ?? '').trim()
+        if (text) sendToPlay(text)
+      } catch (err) {
+        setError(err.message ?? 'Could not transcribe audio.')
+        setSending(false)
+      }
+    }
 
-      recognition.onstart = () => {
+    async function startListening() {
+      if (mediaRecorderRef.current?.state === 'recording') return
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        mediaStreamRef.current = stream
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext
+        const audioContext = new AudioContextClass()
+        audioContextRef.current = audioContext
+        const analyser = audioContext.createAnalyser()
+        analyser.fftSize = 512
+        analyser.smoothingTimeConstant = 0.85
+        analyserRef.current = analyser
+        bufferRef.current = new Uint8Array(analyser.frequencyBinCount)
+        const source = audioContext.createMediaStreamSource(stream)
+        source.connect(analyser)
+
+        function drawVisualizer() {
+          const canvas = canvasRef.current
+          const anal = analyserRef.current
+          const buffer = bufferRef.current
+          if (!canvas || !anal || !buffer) return
+          anal.getByteFrequencyData(buffer)
+          const ctx = canvas.getContext('2d')
+          if (!ctx) return
+          const { width, height } = canvas
+          ctx.clearRect(0, 0, width, height)
+          const barCount = 32
+          const barWidth = width / barCount
+          const gap = 1
+          ctx.fillStyle = '#1DB954'
+          for (let i = 0; i < barCount; i++) {
+            const dataIndex = Math.floor((i / barCount) * buffer.length)
+            const value = buffer[dataIndex] ?? 0
+            const barHeight = Math.max(0, (value - 30) / 225) * height
+            ctx.fillRect(
+              i * barWidth + gap / 2,
+              height - barHeight,
+              barWidth - gap,
+              barHeight
+            )
+          }
+          requestRef.current = requestAnimationFrame(drawVisualizer)
+        }
+        drawVisualizer()
+
+        const recorder = new MediaRecorder(stream)
+        mediaRecorderRef.current = recorder
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunksRef.current.push(e.data)
+        }
+        recorder.onstop = () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+          sendAudioToWhisper(audioBlob)
+          setBrowserListening(false)
+        }
+        audioChunksRef.current = []
+        recorder.start()
         startedByHoldRef.current = true
         setBrowserListening(true)
-      }
-      recognition.onresult = (e) => {
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const r = e.results[i]
-          if (r.isFinal && r[0]?.transcript) {
-            transcriptRef.current += (transcriptRef.current ? ' ' : '') + r[0].transcript
-          }
-        }
-      }
-      recognition.onend = () => {
-        setBrowserListening(false)
-
-        // If we didn't explicitly request a stop (via Alt+Q up or mic click),
-        // treat this as an unexpected end and immediately restart listening.
-        if (!stopRequestedRef.current) {
-          recognitionRef.current = null
-          startListening()
-          return
-        }
-
-        recognitionRef.current = null
-        const transcript = transcriptRef.current.trim()
-        const holdDuration = Date.now() - hotkeyDownAtRef.current
-        if (transcript) {
-          sendToPlay(transcript)
-        } else if (holdDuration < MIN_HOLD_MS) {
-          // Very short tap: don't send empty command.
-        }
-      }
-      recognition.onerror = (e) => {
-        setBrowserListening(false)
-        // Only surface hard errors; ignore transient ones while the hotkey/click is held.
-        if (e.error === 'not-allowed') {
-          setError('Microphone access denied.')
-        } else if (e.error !== 'aborted' && stopRequestedRef.current) {
-          setError('Speech recognition error.')
-        }
-      }
-
-      recognitionRef.current = recognition
-      setError(null)
-      try {
-        recognition.start()
-      } catch (_) {
-        setError('Could not start microphone.')
+        setError(null)
+      } catch (err) {
+        setError('Could not access microphone.')
       }
     }
 
     function stopListening() {
-      stopRequestedRef.current = true
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop()
-        } catch (_) {
-          try {
-            recognitionRef.current.abort()
-          } catch (_) {}
-        }
-        recognitionRef.current = null
+      if (requestRef.current != null) {
+        cancelAnimationFrame(requestRef.current)
+        requestRef.current = null
       }
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop()
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop())
+        mediaStreamRef.current = null
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {})
+        audioContextRef.current = null
+      }
+      analyserRef.current = null
+      mediaRecorderRef.current = null
       hotkeyDownRef.current = false
     }
 
     function onKeyDown(e) {
-      const isAltQ =
-        (e.key === 'q' || e.key === 'Q') && e.altKey
-      if (isAltQ) {
-        // Always prevent the browser's default Alt+Q behavior
+      const isHotkey = e.code === 'Space' && e.ctrlKey && e.shiftKey
+      if (isHotkey) {
+        // Prevent browser default (scroll, etc.)
         e.preventDefault()
         e.stopPropagation()
 
-        // If we don't have Electron (pure web), fall back to in-window handling
+        // Fallback: handle in-window when Electron is not present
         if (!window.electronAPI) {
           if (hotkeyDownRef.current) return // key repeat
           hotkeyDownRef.current = true
@@ -132,11 +158,12 @@ export default function VoiceAssistant() {
     }
 
     function onKeyUp(e) {
-      const isQ = e.key === 'q' || e.key === 'Q'
-      const isAlt = e.key === 'Alt'
-      if (isQ || isAlt) {
+      const isSpace = e.code === 'Space'
+      const isCtrl = e.key === 'Control'
+      const isShift = e.key === 'Shift'
+      if (isSpace || isCtrl || isShift) {
         if (!window.electronAPI) {
-          if (recognitionRef.current && startedByHoldRef.current) {
+          if (mediaRecorderRef.current?.state === 'recording' && startedByHoldRef.current) {
             stopListening()
           } else {
             hotkeyDownRef.current = false
@@ -165,7 +192,7 @@ export default function VoiceAssistant() {
       })
     }
 
-    // Browser key events as fallback (and to suppress Alt+Q default)
+    // Browser key events as fallback (and to suppress Ctrl+Shift+Space default)
     window.addEventListener('keydown', onKeyDown, true)
     window.addEventListener('keyup', onKeyUp, true)
 
@@ -187,10 +214,9 @@ export default function VoiceAssistant() {
       if (offHotkeyUp) offHotkeyUp()
       document.removeEventListener('click', onFirstInteraction)
       document.removeEventListener('keydown', onFirstInteraction)
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort() } catch (_) {}
+      if (mediaRecorderRef.current?.state === 'recording') {
+        try { mediaRecorderRef.current.stop() } catch (_) {}
       }
-      // Keep start/stop in ref so mic click still works if effect re-runs (e.g. Strict Mode)
     }
   }, [])
 
@@ -224,10 +250,14 @@ export default function VoiceAssistant() {
   }, [])
 
   async function sendToPlay(text) {
+    if (window.electronAPI?.logToTerminal) {
+      window.electronAPI.logToTerminal('\n🎙️ User said: "' + text.trim() + '"')
+    }
     if (!text || !text.trim()) return
     setSending(true)
     setError(null)
     try {
+      console.log('🚀 Sending to backend: /play ->', text)
       const res = await fetch(apiUrl('play'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -289,18 +319,17 @@ export default function VoiceAssistant() {
           )}
         </button>
 
+        <canvas ref={canvasRef} width="200" height="60" className="mx-auto mt-4" />
+
         <div>
           <p className="text-white text-lg sm:text-2xl font-bold mb-1">
             {browserListening ? 'Listening…' : sending ? 'Playing…' : `Hold ${HOTKEY} to speak`}
           </p>
           <p className="text-[#b3b3b3] text-sm">
             {browserListening
-              ? 'Say your command, then release Alt+Q'
-              : 'Hold Alt+Q while you speak, then release to send. Or click the mic.'}
+              ? 'Say your command, then release Ctrl+Shift+Space'
+              : 'Hold Ctrl+Shift+Space while you speak, then release to send. Or click the mic.'}
           </p>
-          {!SpeechRecognitionAPI && (
-            <p className="text-amber-400 text-xs mt-2">Use Chrome or Edge for voice.</p>
-          )}
         </div>
       </div>
 
@@ -316,7 +345,7 @@ export default function VoiceAssistant() {
 
         {requests.length === 0 ? (
           <p className="text-[#535353] text-sm italic">
-            Hold Alt+Q to speak, or click the mic.
+            Hold Ctrl+Shift+Space to speak, or click the mic.
           </p>
         ) : (
           <ul className="space-y-3 sm:space-y-4">

@@ -14,14 +14,8 @@ pip install -r backend/requirements.txt
 # 3. Start the backend
 uvicorn backend.main:app --reload
 
-# 4. In another terminal, start the frontend (web or desktop app)
+# 4. In another terminal, start the desktop app
 cd frontend && npm install
-
-# Web:
-npm run dev
-# Then visit http://localhost:5173
-
-# Windows desktop app (runs in background, system tray):
 npm run electron:dev
 ```
 
@@ -82,10 +76,9 @@ flowchart LR
 | Method | How |
 |--------|-----|
 | **Desktop app (Windows)** | Hold **Alt+S** anywhere to speak; release to send. Runs in system tray. |
-| **Website** | Hold **Alt+S** while speaking, then release. (Chrome/Edge) |
 | **Terminal** | Run `python -X utf8 voice_client.py`, then press Enter or **Ctrl+Shift+L** to record. |
 
-The website uses the browser’s Speech Recognition API; the terminal client uses Whisper.
+The desktop app uses the browser’s Speech Recognition API; the terminal client uses Whisper.
 
 ---
 

@@ -1,11 +1,16 @@
 import logging
+import os
+import tempfile
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from openai import OpenAI
 from pydantic import BaseModel
 
+from backend.config import OPENAI_API_KEY
 from backend.spotify_client import SpotifyClient
 from backend.intent_engine import IntentEngine
 from backend.database import init_db, get_session
@@ -112,6 +117,26 @@ async def top_tracks(limit: int = 50, time_range: str = "medium_term"):
     return {"total": len(tracks), "time_range": time_range, "tracks": tracks}
 
 
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Accept an audio blob, transcribe with OpenAI Whisper, return { text }."""
+    tmp_path = None
+    try:
+        content = await file.read()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        with open(tmp_path, "rb") as f:
+            result = client.audio.transcriptions.create(model="whisper-1", file=f)
+        return {"text": result.text}
+    except Exception as exc:
+        logger.exception("Transcribe failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
 
 class PlayRequest(BaseModel):
     message: str
@@ -181,6 +206,7 @@ async def play_track(body: PlayRequest):
     - **artist** — only an artist is named  (e.g. "Play NewJeans", "Play BTS")
     - **multi**  — genre/mood query         (e.g. "Play lofi", "Play krnb")
     """
+    logger.info("\n" + "=" * 40 + "\n🎙️ RECEIVED VOICE COMMAND: '%s'\n" + "=" * 40, body.message)
     spotify: SpotifyClient = app.state.spotify
     intent_engine: IntentEngine = app.state.intent
 
@@ -196,25 +222,73 @@ async def play_track(body: PlayRequest):
     if not results:
         raise HTTPException(status_code=404, detail=f"No tracks found for: '{query}'")
 
+    # Score candidates by popularity and how well their metadata matches the query.
+    def _normalize(s: str) -> str:
+        return s.lower().replace("&", "and").strip()
+
+    def _score_track(t: dict[str, Any]) -> int:
+        base_pop = t.get("popularity") or 0
+        bonus = 0
+        q_norm = _normalize(query)
+        track_name = _normalize(t.get("name") or "")
+        artists_str = _normalize(" ".join(t.get("artists") or []))
+
+        # +50 if any artist name appears anywhere in the query
+        for artist in (t.get("artists") or []):
+            if _normalize(artist) in q_norm:
+                bonus += 50
+                break
+
+        # +50 if the track name is a direct match to the (normalized) query
+        if track_name == q_norm:
+            bonus += 50
+
+        return base_pop + bonus
+
+    results = sorted(results, key=_score_track, reverse=True)
+
     track = results[0]
     query_words = set(query.lower().split())
     top_artist_words = set((track["artists"][0] if track.get("artists") else "").lower().split())
     track_name_words = set(track["name"].lower().split())
 
+    extras = intent.get("extras") or {}
+    is_mood_or_genre = bool(extras.get("is_mood_or_genre"))
+
     artist_named = bool(top_artist_words & query_words)
 
-    if not artist_named:
-        # Genre/mood query — widen the pool with a second search
-        extra = spotify.search_track(f"{query} mix", limit=10)
-        seen = {t["id"] for t in results}
-        results += [t for t in extra if t["id"] not in seen]
-        unique_artists = {a for t in results for a in t.get("artists", [])}
-        is_diverse = len(unique_artists) >= 2
-    else:
-        is_diverse = False
+    playlist_uris: list[str] = []
+    is_diverse = False
+
+    if not artist_named or is_mood_or_genre:
+        # Genre/mood query — first try a curated playlist (e.g. "study lofi" → study playlist)
+        try:
+            playlist_uris = spotify.search_playlists(query, limit=1)
+        except Exception as exc:
+            logger.warning("Playlist search for %r failed: %s", query, exc)
+
+        if not playlist_uris and not is_mood_or_genre:
+            # Fallback: widen the pool with a second track search
+            extra = spotify.search_track(f"{query} mix", limit=10)
+            seen = {t["id"] for t in results}
+            results += [t for t in extra if t["id"] not in seen]
+            unique_artists = {a for t in results for a in t.get("artists", [])}
+            is_diverse = len(unique_artists) >= 2
 
     try:
-        if is_diverse:
+        if playlist_uris:
+            # Playlist-based multi playback (no artist list, but better curated tracks)
+            ctx = spotify.play_multi_track(playlist_uris, device_id=body.device_id)
+            resp = {
+                "status": "playing",
+                "mode": "multi",
+                "track_count": ctx["track_count"],
+                "artists": ctx["artists"],
+                "shuffle": ctx["shuffle"],
+                "device_id": ctx["device_id"],
+            }
+
+        elif is_diverse:
             # Genre/mood — queue everything, let Spotify shuffle
             ctx = spotify.play_multi_track(results, device_id=body.device_id)
             resp = {

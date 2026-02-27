@@ -55,6 +55,15 @@ INTENT_TOOL = {
                 "extras": {
                     "type": "object",
                     "description": "Any additional structured parameters (e.g. limit, genre, mood).",
+                    "properties": {
+                        "is_mood_or_genre": {
+                            "type": "boolean",
+                            "description": (
+                                "True if the user is asking for vibes, study music, lofi, chill tracks, "
+                                "background music, or other genre/mood-based playback rather than a specific song."
+                            ),
+                        },
+                    },
                     "additionalProperties": True,
                 },
             },
@@ -72,6 +81,29 @@ Available actions:
 - get_current_user    : user asks who is logged in
 - list_devices        : user wants to see available playback devices
 - unknown             : request is unclear or unrelated to music
+
+query formatting:
+- Always strip filler words like "play", "put on", "by", "from", "the song", "the track" from the query field.
+- If the user specifies both a song and an artist, format the query as "<Song Title> <Artist>" with no filler words.
+  For example:
+  - "play pied piper by BTS"         → query: "Pied Piper BTS"
+  - "play plastic love by Mariya Takeuchi" → query: "Plastic Love Mariya Takeuchi"
+  - "play scott and zelda"           → query: "Scott and Zelda"
+  - "play something by Drake"        → query: "Drake"
+
+extras.is_mood_or_genre:
+- Set extras.is_mood_or_genre = true when the user asks for vibes, background music, study music, focus playlists,
+  lofi, chill tracks, chillhop, ambient, or similar genre/mood-based playback.
+- Examples that should set is_mood_or_genre = true:
+  - "play some chill vibes"
+  - "study lofi"
+  - "focus music"
+  - "chill tracks for working"
+  - "background music for coding"
+- Examples that should NOT set is_mood_or_genre = true:
+  - "play Pied Piper by BTS"
+  - "play Drake"
+  - "play the album After Hours"
 
 Always call the resolve_intent function. Never reply with plain text."""
 
@@ -148,14 +180,20 @@ class IntentEngine:
         # Strip action verb to get the bare query
         query = _STRIP_PREFIX.sub("", text).strip()
 
+        extras: dict[str, Any] = {}
+
+        # Heuristic for mood/genre style queries when OpenAI is unavailable.
+        if re.search(r"\b(lofi|lo-fi|chill|vibes?|vibe|study|focus|ambient|background)\b", text, re.I):
+            extras["is_mood_or_genre"] = True
+
         if _RECOMMEND_TRIGGERS.search(text):
-            return {"action": "get_recommendations", "query": query, "extras": {}}
+            return {"action": "get_recommendations", "query": query, "extras": extras}
 
         if _SEARCH_TRIGGERS.search(text):
-            return {"action": "search_music", "query": query, "extras": {}}
+            return {"action": "search_music", "query": query, "extras": extras}
 
         if _PLAY_TRIGGERS.search(text):
-            return {"action": "play_music", "query": query, "extras": {}}
+            return {"action": "play_music", "query": query, "extras": extras}
 
         # No keyword matched — treat whole input as a play query
-        return {"action": "play_music", "query": text, "extras": {}}
+        return {"action": "play_music", "query": text, "extras": extras}
