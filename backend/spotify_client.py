@@ -5,6 +5,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 from backend.config import (
+    SPOTIFY_CACHE_PATH,
     SPOTIFY_CLIENT_ID,
     SPOTIFY_CLIENT_SECRET,
     SPOTIFY_REDIRECT_URI,
@@ -16,20 +17,34 @@ SCOPES = (
     "user-read-playback-state "
     "user-modify-playback-state "
     "user-read-currently-playing "
-    "user-top-read"
+    "user-top-read "
+    "playlist-read-private"
 )
 
 
 class SpotifyClient:
     def __init__(self):
+        self._cache_path = SPOTIFY_CACHE_PATH
         self.auth_manager = SpotifyOAuth(
             client_id=SPOTIFY_CLIENT_ID,
             client_secret=SPOTIFY_CLIENT_SECRET,
             redirect_uri=SPOTIFY_REDIRECT_URI,
             scope=SCOPES,
             open_browser=False,
+            cache_path=SPOTIFY_CACHE_PATH,
         )
         self.client = spotipy.Spotify(auth_manager=self.auth_manager)
+
+    def clear_cache(self) -> None:
+        """Remove the cached Spotify token so the next request requires re-authorization."""
+        import os
+        if os.path.isfile(self._cache_path):
+            os.remove(self._cache_path)
+            logger.info("Spotify token cache cleared.")
+
+    def has_cached_token(self) -> bool:
+        """Return True if a token is cached, without prompting. Use to avoid spotipy's interactive CLI prompt."""
+        return self.auth_manager.get_cached_token() is not None
 
     def authenticate(self) -> str:
         """Return the Spotify OAuth authorization URL for the user to visit."""
@@ -126,6 +141,22 @@ class SpotifyClient:
             for i, t in enumerate(tracks)
         ]
 
+    def get_my_playlists(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the current user's playlists as a list of dicts with id, name, uri, and image_url."""
+        response = self.client.current_user_playlists(limit=limit)
+        items = response.get("items", [])
+        logger.info("Fetched %d playlist(s) for current user.", len(items))
+        result: list[dict[str, Any]] = []
+        for pl in items:
+            images = pl.get("images") or []
+            image_url = images[0].get("url") if images else None
+            result.append({
+                "id": pl.get("id"),
+                "name": pl.get("name"),
+                "uri": pl.get("uri"),
+                "image_url": image_url,
+            })
+        return result
 
     # ------------------------------------------------------------------
     # Playback
@@ -161,6 +192,21 @@ class SpotifyClient:
         self.client.shuffle(state=True, device_id=device_id)
         logger.info("Playing URI %s on device=%s", uri, device_id)
         return {"mode": "track", "device_id": device_id, "shuffle": True}
+
+    def play_playlist(
+        self,
+        uri: str,
+        device_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Start playback of a playlist by URI with shuffle on."""
+        if not device_id or device_id.lower() == "string":
+            device_id = self._get_active_device_id()
+
+        self.client.start_playback(device_id=device_id, context_uri=uri)
+        self.client.shuffle(state=True, device_id=device_id)
+
+        logger.info("Playing playlist %s on device=%s", uri, device_id)
+        return {"mode": "playlist", "uri": uri, "device_id": device_id, "shuffle": True}
 
     def play_track(
         self,

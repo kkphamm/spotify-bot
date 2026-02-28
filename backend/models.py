@@ -30,6 +30,9 @@ class User(Base):
     mood_requests: Mapped[list["MoodRequest"]] = relationship(
         "MoodRequest", back_populates="user", cascade="all, delete-orphan"
     )
+    connected_playlists: Mapped[list["ConnectedPlaylist"]] = relationship(
+        "ConnectedPlaylist", back_populates="user", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<User spotify_id={self.spotify_id!r} name={self.display_name!r}>"
@@ -74,3 +77,22 @@ class MoodRequest(Base):
 
     def __repr__(self) -> str:
         return f"<MoodRequest message={self.message[:40]!r} action={self.resolved_action!r}>"
+
+
+class ConnectedPlaylist(Base):
+    """A playlist linked by the user for the Connected Playlists feature."""
+
+    __tablename__ = "connected_playlists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    spotify_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    uri: Mapped[str] = mapped_column(String(128), nullable=False)
+    image_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    user: Mapped["User | None"] = relationship("User", back_populates="connected_playlists")
+
+    def __repr__(self) -> str:
+        return f"<ConnectedPlaylist name={self.name!r} spotify_id={self.spotify_id!r}>"

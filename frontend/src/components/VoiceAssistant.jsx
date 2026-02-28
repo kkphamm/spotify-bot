@@ -4,6 +4,8 @@ import { apiUrl } from '../api'
 const HOTKEY = 'Ctrl + Shift + Space'
 const POLL_INTERVAL_MS = 2500
 const PULSE_DURATION_MS = 5000  // Glow/pulse after command is sent
+const MIN_RECORDING_MS = 1500   // Require at least ~1.5s of recording
+const MIN_VOLUME_THRESHOLD = 12 // Below this max level, treat as silent (0–255)
 
 export default function VoiceAssistant() {
   const [requests, setRequests] = useState([])
@@ -22,6 +24,8 @@ export default function VoiceAssistant() {
   const bufferRef = useRef(null)
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
+  const recordingStartTimeRef = useRef(null)
+  const maxVolumeRef = useRef(0)
 
   const handleMicClick = () => {
     const { start, stop } = startStopRef.current
@@ -77,6 +81,8 @@ export default function VoiceAssistant() {
           const buffer = bufferRef.current
           if (!canvas || !anal || !buffer) return
           anal.getByteFrequencyData(buffer)
+          const peak = buffer.length ? Math.max(...buffer) : 0
+          if (peak > maxVolumeRef.current) maxVolumeRef.current = peak
           if (window.electronAPI?.sendAudioData) {
             const compressedData = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
               .map((i) => buffer[i] ?? 0)
@@ -116,6 +122,30 @@ export default function VoiceAssistant() {
           if (e.data.size > 0) audioChunksRef.current.push(e.data)
         }
         recorder.onstop = () => {
+          const durationMs = recordingStartTimeRef.current != null
+            ? Date.now() - recordingStartTimeRef.current
+            : 0
+          const tooShort = durationMs < MIN_RECORDING_MS
+          const tooQuiet = maxVolumeRef.current < MIN_VOLUME_THRESHOLD
+          if (tooShort || tooQuiet) {
+            setError(tooShort && tooQuiet
+              ? 'Recording too short or too quiet. Please try again and speak clearly while holding the button.'
+              : tooShort
+                ? 'Recording too short. Please try again and hold the button longer while you speak.'
+                : 'No sound detected. Please try again and speak clearly into the microphone.')
+            setBrowserListening(false)
+            if (mediaStreamRef.current) {
+              mediaStreamRef.current.getTracks().forEach((t) => t.stop())
+            }
+            if (audioContextRef.current) {
+              audioContextRef.current.close().catch(() => {})
+            }
+            mediaStreamRef.current = null
+            audioContextRef.current = null
+            analyserRef.current = null
+            mediaRecorderRef.current = null
+            return
+          }
           const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
           sendAudioToWhisper(audioBlob)
           if (mediaStreamRef.current) {
@@ -131,6 +161,8 @@ export default function VoiceAssistant() {
           setBrowserListening(false)
         }
         audioChunksRef.current = []
+        recordingStartTimeRef.current = Date.now()
+        maxVolumeRef.current = 0
         recorder.start()
         startedByHoldRef.current = true
         setBrowserListening(true)
@@ -350,7 +382,9 @@ export default function VoiceAssistant() {
         </h3>
 
         {error && (
-          <p className="text-red-400 text-sm mb-3">{error}</p>
+          <p className="text-red-500 text-sm mb-3 font-medium" role="alert">
+            {error}
+          </p>
         )}
 
         {requests.length === 0 ? (

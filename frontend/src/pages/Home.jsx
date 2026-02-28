@@ -9,6 +9,14 @@ export default function Home() {
   const [tracksLoading, setTracksLoading] = useState(true)
   const [tracksError, setTracksError] = useState(null)
   const [playingId, setPlayingId] = useState(null)
+  const [displayName, setDisplayName] = useState(null)
+
+  useEffect(() => {
+    fetch(apiUrl('me'))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((user) => user && setDisplayName(user.display_name ?? user.id ?? null))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     fetch(apiUrl('top-tracks?limit=10'))
@@ -54,7 +62,7 @@ export default function Home() {
   return (
     <div className="min-h-full">
       <div className="bg-gradient-to-b from-[#1a3a2a] to-[#121212] pb-6">
-        <Topbar title="Good evening" />
+        <Topbar title={displayName ? `Howdy, ${displayName}!` : 'Howdy'} />
 
         {/* Voice Assistant */}
         <div className="px-4 sm:px-8 mt-3 sm:mt-4">

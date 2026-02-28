@@ -10,11 +10,13 @@ from fastapi.responses import RedirectResponse
 from openai import OpenAI
 from pydantic import BaseModel
 
-from backend.config import OPENAI_API_KEY
+from sqlalchemy import delete, func, select
+
+from backend.config import FRONTEND_URL, OPENAI_API_KEY
 from backend.spotify_client import SpotifyClient
 from backend.intent_engine import IntentEngine
 from backend.database import init_db, get_session
-from backend.models import MoodRequest
+from backend.models import ConnectedPlaylist, MoodRequest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,13 +80,35 @@ async def callback(request: Request, code: str | None = None, error: str | None 
     spotify: SpotifyClient = app.state.spotify
     spotify.auth_manager.get_access_token(code, as_dict=False)
     logger.info("Spotify OAuth token obtained via callback.")
-    return {"status": "authenticated"}
+    frontend_base = FRONTEND_URL.rstrip("/")
+    return RedirectResponse(url=f"{frontend_base}/#/")
+
+
+@app.post("/logout")
+async def logout():
+    """Clear the cached Spotify token; next request will require re-authorization."""
+    spotify: SpotifyClient = app.state.spotify
+    spotify.clear_cache()
+    app.state.spotify = SpotifyClient()
+    logger.info("User logged out; Spotify client reset.")
+    return {"status": "logged_out"}
+
+
+def _require_spotify_auth() -> SpotifyClient:
+    """Return the Spotify client if a token is cached; otherwise raise 401 (avoids spotipy CLI prompt)."""
+    spotify: SpotifyClient = app.state.spotify
+    if not spotify.has_cached_token():
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated with Spotify. Visit /auth to sign in.",
+        )
+    return spotify
 
 
 @app.get("/me")
 async def get_current_user():
     """Return the authenticated Spotify user's profile."""
-    spotify: SpotifyClient = app.state.spotify
+    spotify = _require_spotify_auth()
     try:
         user = spotify.get_current_user()
     except Exception as exc:
@@ -95,7 +119,7 @@ async def get_current_user():
 @app.get("/devices")
 async def list_devices():
     """Return available Spotify playback devices."""
-    spotify: SpotifyClient = app.state.spotify
+    spotify = _require_spotify_auth()
     try:
         devices = spotify.list_devices()
     except Exception as exc:
@@ -109,12 +133,83 @@ async def top_tracks(limit: int = 50, time_range: str = "medium_term"):
     Return the current user's top tracks.
     time_range: short_term | medium_term | long_term
     """
-    spotify: SpotifyClient = app.state.spotify
+    spotify = _require_spotify_auth()
     try:
         tracks = spotify.get_top_tracks(limit=limit, time_range=time_range)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"total": len(tracks), "time_range": time_range, "tracks": tracks}
+
+
+@app.get("/my-spotify-playlists")
+async def get_my_spotify_playlists(limit: int = 50):
+    """Return the current user's Spotify playlists (id, name, uri, image_url)."""
+    spotify = _require_spotify_auth()
+    try:
+        playlists = spotify.get_my_playlists(limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"playlists": playlists}
+
+
+@app.get("/connected-playlists")
+async def get_connected_playlists():
+    """Return all ConnectedPlaylist records from the database."""
+    with get_session() as session:
+        result = session.execute(select(ConnectedPlaylist))
+        rows = result.scalars().all()
+    return [
+        {
+            "id": row.id,
+            "user_id": row.user_id,
+            "spotify_id": row.spotify_id,
+            "name": row.name,
+            "uri": row.uri,
+            "image_url": row.image_url,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
+
+
+class ConnectPlaylistRequest(BaseModel):
+    spotify_id: str
+    name: str
+    uri: str
+    image_url: str | None = None
+
+
+@app.post("/connect-playlist")
+async def connect_playlist(body: ConnectPlaylistRequest):
+    """Add a playlist to connected playlists if not already present (by spotify_id)."""
+    with get_session() as session:
+        existing = session.execute(
+            select(ConnectedPlaylist).where(ConnectedPlaylist.spotify_id == body.spotify_id)
+        )
+        if existing.scalars().first() is not None:
+            return {"status": "already_connected", "spotify_id": body.spotify_id}
+        session.add(
+            ConnectedPlaylist(
+                user_id=None,
+                spotify_id=body.spotify_id,
+                name=body.name,
+                uri=body.uri,
+                image_url=body.image_url,
+            )
+        )
+        session.commit()
+    return {"status": "connected", "spotify_id": body.spotify_id}
+
+
+@app.delete("/disconnect-playlist/{spotify_id}")
+async def disconnect_playlist(spotify_id: str):
+    """Remove the ConnectedPlaylist with the given spotify_id."""
+    with get_session() as session:
+        result = session.execute(delete(ConnectedPlaylist).where(ConnectedPlaylist.spotify_id == spotify_id))
+        session.commit()
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"No connected playlist with spotify_id: {spotify_id}")
+    return {"status": "disconnected", "spotify_id": spotify_id}
 
 
 @app.post("/transcribe")
@@ -187,7 +282,7 @@ def _resolve_play_query(intent: dict, message: str) -> str:
 @app.post("/play-track")
 async def play_track_by_uri(body: PlayTrackRequest):
     """Play a specific track by Spotify URI (e.g. spotify:track:xxx)."""
-    spotify: SpotifyClient = app.state.spotify
+    spotify = _require_spotify_auth()
     if not body.uri or not body.uri.strip().startswith("spotify:track:"):
         raise HTTPException(status_code=400, detail="Invalid track URI. Use spotify:track:xxx")
     try:
@@ -207,7 +302,7 @@ async def play_track(body: PlayRequest):
     - **multi**  — genre/mood query         (e.g. "Play lofi", "Play krnb")
     """
     logger.info("\n" + "=" * 40 + "\n🎙️ RECEIVED VOICE COMMAND: '%s'\n" + "=" * 40, body.message)
-    spotify: SpotifyClient = app.state.spotify
+    spotify = _require_spotify_auth()
     intent_engine: IntentEngine = app.state.intent
 
     try:
@@ -217,6 +312,27 @@ async def play_track(body: PlayRequest):
 
     query = _resolve_play_query(intent, body.message)
     logger.info("Resolved intent: %s | query: %r", intent, query)
+
+    # Check for a matching connected playlist by name (case-insensitive)
+    with get_session() as session:
+        match = session.execute(
+            select(ConnectedPlaylist).where(
+                func.lower(ConnectedPlaylist.name) == query.lower().strip()
+            )
+        )
+        playlist = match.scalars().first()
+    if playlist:
+        ctx = spotify.play_playlist(playlist.uri, device_id=body.device_id)
+        resp = {
+            "status": "playing",
+            "mode": "playlist",
+            "playlist": playlist.name,
+            "uri": playlist.uri,
+            "device_id": ctx.get("device_id"),
+            "shuffle": ctx.get("shuffle", True),
+        }
+        _save_mood_request(body.message, intent, playlist.name, mode="playlist")
+        return resp
 
     results = spotify.search_track(query, limit=10)
     if not results:
