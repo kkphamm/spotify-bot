@@ -1,16 +1,23 @@
-# React + Vite
+# AI Music Assistant — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite + Tailwind + Electron desktop app for the AI Music Assistant. Voice input uses a global hotkey and a floating pill visualizer.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Scripts
 
-## React Compiler
+| Script | Description |
+|--------|-------------|
+| `npm run build` | Vite production build → `dist/` |
+| `npm run electron:dev` | Build in watch mode + run Electron |
+| `npm run electron:build` | Build and package with electron-builder |
+| `npm run electron:start` | Run Electron (assumes `dist/` exists) |
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the ESLint configuration
+## Structure
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- **`electron/`** — Main process (`main.cjs`), preload (`preload.cjs`), global hotkey (Ctrl+Shift+Space), overlay window.
+- **`src/`** — React app: `App.jsx`, `main.jsx`, `api.js`; `components/` (Sidebar, VoiceAssistant, FeatureGrid, Topbar); `pages/` (Home, PillOverlay).
+
+For full setup and API details, see the [root README](../README.md).

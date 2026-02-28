@@ -37,3 +37,8 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #727272;
 }
+
+body:has(#overlay-root),
+body:has(#overlay-root) #root {
+  background-color: transparent !important;
+}

@@ -11,15 +11,16 @@ Control Spotify with natural language. Use voice or text — the app parses your
 pip install -r backend/requirements.txt
 
 # 2. Add your keys to .env (see Setup below)
-# 3. Start the backend
-uvicorn backend.main:app --reload
 
-# 4. In another terminal, start the desktop app
-cd frontend && npm install
-npm run electron:dev
+# 3. From project root: start backend + desktop app in one command
+npm run dev
+
+# Or run separately:
+# Terminal 1: uvicorn backend.main:app --reload
+# Terminal 2: cd frontend && npm install && npm run electron:dev
 ```
 
-Visit **http://localhost:8000/auth** to log in with Spotify. Use **Alt+S** to speak — in the desktop app hold it globally (even when the window is closed).
+First time: `cd frontend && npm install`. Visit **http://localhost:8000/auth** to log in with Spotify. Hold **Ctrl+Shift+Space** anywhere to speak (global hotkey); release to send.
 
 ---
 
@@ -75,10 +76,10 @@ flowchart LR
 
 | Method | How |
 |--------|-----|
-| **Desktop app (Windows)** | Hold **Alt+S** anywhere to speak; release to send. Runs in system tray. |
+| **Desktop app (Windows)** | Hold **Ctrl+Shift+Space** anywhere to speak; release to send. Runs in system tray. A floating pill visualizer appears while you speak. |
 | **Terminal** | Run `python -X utf8 voice_client.py`, then press Enter or **Ctrl+Shift+L** to record. |
 
-The desktop app uses the browser’s Speech Recognition API; the terminal client uses Whisper.
+The desktop app records with MediaRecorder and sends audio to the backend; transcription uses OpenAI Whisper. The terminal client also uses Whisper.
 
 ---
 
@@ -111,14 +112,17 @@ ai_music_assistant/
 │   ├── main.py           # FastAPI routes
 │   ├── spotify_client.py # Spotify API
 │   ├── intent_engine.py  # OpenAI intent parser
-│   └── ...
-├── frontend/             # React + Tailwind + Electron
+│   ├── database.py       # SQLAlchemy session
+│   ├── models.py         # MoodRequest, etc.
+│   └── config.py         # Env / API keys
+├── frontend/             # React + Vite + Tailwind + Electron
 │   ├── electron/         # Main process, preload, global hotkey
 │   ├── src/
-│   │   ├── components/   # VoiceAssistant, FeatureGrid, Sidebar
-│   │   └── pages/        # Home, Top Tracks, Voice Control
+│   │   ├── components/   # VoiceAssistant, FeatureGrid, Sidebar, Topbar
+│   │   └── pages/        # Home, PillOverlay (floating visualizer)
 │   └── ...
 ├── voice_client.py       # Terminal voice input (Whisper)
+├── package.json          # Root scripts (e.g. npm run dev)
 └── .env                  # API keys
 ```
 
@@ -132,6 +136,7 @@ ai_music_assistant/
 | `GET /top-tracks?limit=10` | Your top tracks |
 | `POST /play` | Natural language → play music |
 | `POST /play-track` | Play by Spotify URI |
+| `POST /transcribe` | Upload audio (e.g. webm); returns `{ "text": "..." }` via Whisper |
 | `GET /devices` | List playback devices |
 | `GET /latest-command` | Last voice/text command |
 
@@ -141,4 +146,4 @@ ai_music_assistant/
 
 - **Backend:** FastAPI, Spotipy, OpenAI, SQLAlchemy
 - **Frontend:** React, Vite, Tailwind, Electron (Windows desktop)
-- **Voice:** Web Speech API (browser), OpenAI Whisper (terminal)
+- **Voice:** MediaRecorder + OpenAI Whisper (desktop); Whisper (terminal)

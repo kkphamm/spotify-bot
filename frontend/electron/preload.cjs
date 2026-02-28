@@ -15,5 +15,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('command-processed', resolvedAction)
   },
   logToTerminal: (message) => ipcRenderer.send('log-to-terminal', message),
+  sendAudioData: (data) => ipcRenderer.send('audio-data', data),
+  setOverlayEnabled: (enabled) => ipcRenderer.send('set-overlay-enabled', enabled),
+  onAudioData: (callback) => {
+    const handler = (_event, data) => callback(data)
+    ipcRenderer.on('audio-data', handler)
+    return () => ipcRenderer.removeListener('audio-data', handler)
+  },
+  onOverlayShown: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('overlay-shown', handler)
+    return () => ipcRenderer.removeListener('overlay-shown', handler)
+  },
   isElectron: true,
 })

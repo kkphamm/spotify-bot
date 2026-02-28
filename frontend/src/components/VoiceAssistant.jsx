@@ -77,24 +77,34 @@ export default function VoiceAssistant() {
           const buffer = bufferRef.current
           if (!canvas || !anal || !buffer) return
           anal.getByteFrequencyData(buffer)
+          if (window.electronAPI?.sendAudioData) {
+            const compressedData = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+              .map((i) => buffer[i] ?? 0)
+              .map((v) => Math.max(4, (v / 255) * 24))
+            window.electronAPI.sendAudioData(compressedData)
+          }
           const ctx = canvas.getContext('2d')
           if (!ctx) return
           const { width, height } = canvas
           ctx.clearRect(0, 0, width, height)
-          const barCount = 32
+          const barCount = 16
           const barWidth = width / barCount
-          const gap = 1
+          const gap = 2
+          const slotWidth = barWidth - gap
+          const actualBarWidth = slotWidth * 0.4
+          const minBarHeight = actualBarWidth * 1.8
+          const centerY = height / 2
           ctx.fillStyle = '#1DB954'
           for (let i = 0; i < barCount; i++) {
             const dataIndex = Math.floor((i / barCount) * buffer.length)
             const value = buffer[dataIndex] ?? 0
-            const barHeight = Math.max(0, (value - 30) / 225) * height
-            ctx.fillRect(
-              i * barWidth + gap / 2,
-              height - barHeight,
-              barWidth - gap,
-              barHeight
-            )
+            const amplitude = Math.max(0, (value - 20) / 235)
+            const barHeight = Math.max(minBarHeight, amplitude * height * 0.52)
+            const x = i * barWidth + gap / 2 + (slotWidth - actualBarWidth) / 2
+            const y = centerY - barHeight / 2
+            ctx.beginPath()
+            ctx.roundRect(x, y, actualBarWidth, barHeight, actualBarWidth / 2)
+            ctx.fill()
           }
           requestRef.current = requestAnimationFrame(drawVisualizer)
         }
@@ -108,6 +118,16 @@ export default function VoiceAssistant() {
         recorder.onstop = () => {
           const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
           sendAudioToWhisper(audioBlob)
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((t) => t.stop())
+          }
+          if (audioContextRef.current) {
+            audioContextRef.current.close().catch(() => {})
+          }
+          mediaStreamRef.current = null
+          audioContextRef.current = null
+          analyserRef.current = null
+          mediaRecorderRef.current = null
           setBrowserListening(false)
         }
         audioChunksRef.current = []
@@ -125,19 +145,12 @@ export default function VoiceAssistant() {
         cancelAnimationFrame(requestRef.current)
         requestRef.current = null
       }
+      if (window.electronAPI?.sendAudioData) {
+        window.electronAPI.sendAudioData(Array(10).fill(4))
+      }
       if (mediaRecorderRef.current?.state === 'recording') {
         mediaRecorderRef.current.stop()
       }
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((t) => t.stop())
-        mediaStreamRef.current = null
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close().catch(() => {})
-        audioContextRef.current = null
-      }
-      analyserRef.current = null
-      mediaRecorderRef.current = null
       hotkeyDownRef.current = false
     }
 
@@ -162,13 +175,10 @@ export default function VoiceAssistant() {
       const isCtrl = e.key === 'Control'
       const isShift = e.key === 'Shift'
       if (isSpace || isCtrl || isShift) {
-        if (!window.electronAPI) {
-          if (mediaRecorderRef.current?.state === 'recording' && startedByHoldRef.current) {
-            stopListening()
-          } else {
-            hotkeyDownRef.current = false
-          }
+        if (mediaRecorderRef.current?.state === 'recording' && startedByHoldRef.current) {
+          stopListening()
         }
+        hotkeyDownRef.current = false
       }
     }
 
