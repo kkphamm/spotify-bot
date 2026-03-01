@@ -1,12 +1,18 @@
 import { useEffect, useState, useMemo } from 'react'
 import Topbar from '../components/Topbar'
+import { usePlaylists } from '../contexts/PlaylistsContext'
 import { apiUrl } from '../api'
 
 export default function ConnectedPlaylists() {
-  const [spotifyPlaylists, setSpotifyPlaylists] = useState([])
-  const [connectedPlaylists, setConnectedPlaylists] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const {
+    spotifyPlaylists,
+    connectedPlaylists,
+    setConnectedPlaylists,
+    loading,
+    error,
+    setError,
+    fetchPlaylists,
+  } = usePlaylists()
   const [togglingId, setTogglingId] = useState(null)
 
   const connectedIds = useMemo(
@@ -19,25 +25,8 @@ export default function ConnectedPlaylists() {
   }
 
   useEffect(() => {
-    setLoading(true)
-    setError(null)
-    Promise.all([
-      fetch(apiUrl('my-spotify-playlists')).then((r) => {
-        if (!r.ok) throw new Error('Failed to load Spotify playlists')
-        return r.json()
-      }),
-      fetch(apiUrl('connected-playlists')).then((r) => {
-        if (!r.ok) throw new Error('Failed to load connected playlists')
-        return r.json()
-      }),
-    ])
-      .then(([spotifyData, connectedData]) => {
-        setSpotifyPlaylists(spotifyData.playlists ?? [])
-        setConnectedPlaylists(Array.isArray(connectedData) ? connectedData : [])
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [])
+    fetchPlaylists()
+  }, [fetchPlaylists])
 
   async function handleToggle(playlist) {
     const id = playlist.id
@@ -108,13 +97,13 @@ export default function ConnectedPlaylists() {
           </div>
         )}
 
-        {!loading && !error && spotifyPlaylists.length === 0 && (
+        {!loading && !error && (spotifyPlaylists ?? []).length === 0 && (
           <p className="text-[#b3b3b3]">No Spotify playlists found. Create some in Spotify first.</p>
         )}
 
-        {!loading && spotifyPlaylists.length > 0 && (
+        {!loading && (spotifyPlaylists ?? []).length > 0 && (
           <div className="grid grid-cols-2 gap-5 sm:gap-8 max-w-4xl">
-            {spotifyPlaylists.map((playlist) => {
+            {(spotifyPlaylists ?? []).map((playlist) => {
               const connected = isConnected(playlist.id)
               const busy = togglingId === playlist.id
               return (

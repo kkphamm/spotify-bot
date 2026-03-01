@@ -1,17 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiUrl } from '../api'
+import { useUser } from '../contexts/UserContext'
 
 export default function Topbar({ title }) {
-  const [user, setUser] = useState(null)
+  const user = useUser()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
-
-  useEffect(() => {
-    fetch(apiUrl('me'))
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => data && setUser(data))
-      .catch(() => {})
-  }, [])
 
   useEffect(() => {
     if (!menuOpen) return

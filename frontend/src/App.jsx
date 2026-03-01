@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
+import VoiceAssistant from './components/VoiceAssistant'
 import Home from './pages/Home'
 import Settings from './pages/Settings'
 import ConnectedPlaylists from './pages/ConnectedPlaylists'
 import PillOverlay from './pages/PillOverlay'
+import { PlaylistsProvider } from './contexts/PlaylistsContext'
+import { UserProvider } from './contexts/UserContext'
 import { apiUrl } from './api'
 
 const STORAGE_KEY = 'pillOverlayEnabled'
@@ -23,15 +26,20 @@ function SettingsSync() {
 
 function MainLayout() {
   const [authStatus, setAuthStatus] = useState('checking')
+  const [user, setUser] = useState(null)
 
   useEffect(() => {
     fetch(apiUrl('me'))
-      .then((res) => {
+      .then(async (res) => {
         if (res.status === 401) {
           setAuthStatus('unauthenticated')
           window.location.href = apiUrl('auth')
-        } else {
-          setAuthStatus('authenticated')
+          return
+        }
+        setAuthStatus('authenticated')
+        if (res.ok) {
+          const data = await res.json().catch(() => null)
+          if (data) setUser(data)
         }
       })
       .catch(() => setAuthStatus('authenticated'))
@@ -49,12 +57,18 @@ function MainLayout() {
   }
 
   return (
-    <div className="flex h-screen bg-[#121212] overflow-hidden">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto bg-[#121212]">
-        <Outlet />
-      </main>
-    </div>
+    <UserProvider user={user}>
+      <PlaylistsProvider>
+        <div className="flex h-screen bg-[#121212] overflow-hidden">
+          <Sidebar />
+          <main className="flex-1 overflow-y-auto bg-[#121212]">
+            <Outlet />
+          </main>
+          {/* Always mounted so hotkey + overlay audio work on Playlists/Settings too */}
+          <VoiceAssistant />
+        </div>
+      </PlaylistsProvider>
+    </UserProvider>
   )
 }
 

@@ -6,6 +6,7 @@ let mainWindow = null
 let overlayWindow = null
 let tray = null
 let isHotkeyDown = false
+let mainWindowRevealedByHotkey = false
 let overlayEnabled = true
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -82,6 +83,7 @@ function createOverlayWindow() {
     skipTaskbar: true,
     resizable: false,
     show: false,
+    focusable: false,
     backgroundColor: '#00000000',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -90,6 +92,13 @@ function createOverlayWindow() {
       backgroundThrottling: false,
     },
   })
+  // Keep overlay above other apps when main window is in background or minimized
+  try {
+    overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  } catch (_) {
+    try { overlayWindow.setVisibleOnAllWorkspaces(true) } catch (_) {}
+  }
+  overlayWindow.setAlwaysOnTop(true, 'floating')
   overlayWindow.on('closed', () => {
     overlayWindow = null
   })
@@ -116,11 +125,18 @@ function registerHoldToTalkHotkey() {
     if (hasSpace && hasCtrl && hasShift && !isHotkeyDown) {
       isHotkeyDown = true
       console.log('hotkey-down: Ctrl+Shift+Space')
-      if (overlayEnabled && overlayWindow && !overlayWindow.isVisible()) {
+      if (overlayEnabled && overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.setAlwaysOnTop(true, 'floating')
         overlayWindow.showInactive()
+        if (typeof overlayWindow.moveTop === 'function') overlayWindow.moveTop()
         overlayWindow.webContents.send('overlay-shown')
       }
       if (mainWindow && !mainWindow.isDestroyed()) {
+        // Show main window inactive so mic/recording works when app was in tray
+        if (!mainWindow.isVisible()) {
+          mainWindowRevealedByHotkey = true
+          mainWindow.showInactive()
+        }
         mainWindow.webContents.send('hotkey-down')
       }
     }
@@ -147,6 +163,10 @@ function registerHoldToTalkHotkey() {
         }
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('hotkey-up')
+          if (mainWindowRevealedByHotkey) {
+            if (mainWindow.isVisible() && !mainWindow.isFocused()) mainWindow.hide()
+            mainWindowRevealedByHotkey = false
+          }
         }
       }
     }

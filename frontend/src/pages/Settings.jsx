@@ -44,7 +44,7 @@ export default function Settings() {
           />
         </label>
         <p className="text-[#b3b3b3] text-sm">
-          When enabled, a small pill appears in the bottom-right corner while you hold Ctrl+Shift+Space to speak.
+          When enabled, a small pill appears at the bottom centre of the screen while you hold Ctrl+Shift+Space to speak.
         </p>
 
         <div className="pt-6 border-t border-[#282828]">

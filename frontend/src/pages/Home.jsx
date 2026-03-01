@@ -1,22 +1,17 @@
 import { useEffect, useState } from 'react'
 import Topbar from '../components/Topbar'
-import VoiceAssistant from '../components/VoiceAssistant'
 import FeatureGrid from '../components/FeatureGrid'
+import { useUser } from '../contexts/UserContext'
 import { apiUrl } from '../api'
 
 export default function Home() {
+  const user = useUser()
   const [tracks, setTracks] = useState([])
   const [tracksLoading, setTracksLoading] = useState(true)
   const [tracksError, setTracksError] = useState(null)
   const [playingId, setPlayingId] = useState(null)
-  const [displayName, setDisplayName] = useState(null)
 
-  useEffect(() => {
-    fetch(apiUrl('me'))
-      .then((r) => (r.ok ? r.json() : null))
-      .then((user) => user && setDisplayName(user.display_name ?? user.id ?? null))
-      .catch(() => {})
-  }, [])
+  const displayName = user?.display_name ?? user?.id ?? null
 
   useEffect(() => {
     fetch(apiUrl('top-tracks?limit=10'))
@@ -64,10 +59,8 @@ export default function Home() {
       <div className="bg-gradient-to-b from-[#1a3a2a] to-[#121212] pb-6">
         <Topbar title={displayName ? `Howdy, ${displayName}!` : 'Howdy'} />
 
-        {/* Voice Assistant */}
-        <div className="px-4 sm:px-8 mt-3 sm:mt-4">
-          <VoiceAssistant />
-        </div>
+        {/* Voice Assistant mounts from MainLayout and portals here when on Home */}
+        <div id="voice-assistant-root" className="px-4 sm:px-8 mt-3 sm:mt-4" />
 
         {/* Feature status grid */}
         <div className="px-4 sm:px-8 mt-4 sm:mt-6">

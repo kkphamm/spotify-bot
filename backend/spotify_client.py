@@ -275,6 +275,8 @@ class SpotifyClient:
     ) -> dict[str, Any]:
         """
         Queue and play a list of tracks from multiple artists (genre/mood searches).
+        When track dicts are provided, uses recommendations API to extend the queue
+        for autoplay. Shuffle is always on.
 
         Accepts either:
         - a list of formatted track dicts (from search_track / get_top_tracks), or
@@ -293,6 +295,22 @@ class SpotifyClient:
         else:
             uris = [t["uri"] for t in tracks if t.get("uri")]
             unique_artists = list({a for t in tracks for a in t.get("artists", [])})
+
+        # Autoplay: use recommendations API to extend queue when we have track IDs
+        seed_ids = [t["id"] for t in tracks if isinstance(t, dict) and t.get("id")][:5]
+        if seed_ids:
+            try:
+                recs = self.client.recommendations(seed_tracks=seed_ids, limit=30)
+                seen = set(uris)
+                before = len(uris)
+                for t in recs.get("tracks", []):
+                    uri = t.get("uri")
+                    if uri and uri not in seen:
+                        uris.append(uri)
+                        seen.add(uri)
+                logger.info("Recommendations added %d tracks for autoplay.", len(uris) - before)
+            except Exception as exc:
+                logger.warning("Recommendations API failed for multi-track: %s", exc)
 
         if uris:
             self.client.start_playback(device_id=device_id, uris=uris)

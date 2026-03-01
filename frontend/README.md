@@ -18,6 +18,6 @@ React + Vite + Tailwind + Electron desktop app for the AI Music Assistant. Voice
 ## Structure
 
 - **`electron/`** — Main process (`main.cjs`), preload (`preload.cjs`), global hotkey (Ctrl+Shift+Space), overlay window.
-- **`src/`** — React app: `App.jsx`, `main.jsx`, `api.js`; `components/` (Sidebar, VoiceAssistant, FeatureGrid, Topbar); `pages/` (Home, PillOverlay).
+- **`src/`** — React app: `App.jsx`, `main.jsx`, `api.js`; `components/` (Sidebar, VoiceAssistant, FeatureGrid, Topbar); `contexts/` (UserContext, PlaylistsContext); `pages/` (Home, TopTracks, ConnectedPlaylists, Settings, PillOverlay).
 
 For full setup and API details, see the [root README](../README.md).

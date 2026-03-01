@@ -1,6 +1,6 @@
 # AI Music Assistant
 
-Control Spotify with natural language. Use voice or text — the app parses your intent and plays the right music.
+Control Spotify with natural language. Use voice or text — the app parses your intent and plays the right music. Connect playlists by name for instant voice control (e.g. *"Play My Chill Mix"*).
 
 ---
 
@@ -20,55 +20,20 @@ npm run dev
 # Terminal 2: cd frontend && npm install && npm run electron:dev
 ```
 
-First time: `cd frontend && npm install`. Visit **http://localhost:8000/auth** to log in with Spotify. Hold **Ctrl+Shift+Space** anywhere to speak (global hotkey); release to send.
+First time: `cd frontend && npm install`. The app will redirect you to Spotify login. Hold **Ctrl+Shift+Space** anywhere to speak (global hotkey); release to send.
 
 ---
 
 ## How It Works
 
-```mermaid
-flowchart LR
-    subgraph Input
-        A[Voice / Text]
-    end
-
-    subgraph AI
-        B[Intent Engine]
-        C[Query]
-    end
-
-    subgraph Spotify
-        D[Search]
-        E{Mode?}
-        F[Track]
-        G[Artist]
-        H[Genre/Mood]
-    end
-
-    subgraph Output
-        I[Play]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E -->|Song name| F
-    E -->|Artist only| G
-    E -->|Genre/mood| H
-    F --> I
-    G --> I
-    H --> I
-```
-
-1. **You** speak or type a command (e.g. *"Play lo-fi beats"*).
+1. **You** speak or type a command (e.g. *"Play lo-fi beats"*, *"Play My Chill Mix"*).
 2. **Intent Engine** (OpenAI) extracts the action and search query.
-3. **Spotify** is searched for tracks.
-4. **Mode** is chosen:
-   - **Track** — you named a song → play that track
+3. **Playback mode** is chosen:
+   - **Connected Playlist** — query matches a playlist you connected → play that playlist
+   - **Track** — you named a song → play that track (with autoplay recommendations)
    - **Artist** — you named an artist → play their top tracks
-   - **Multi** — genre/mood → play a mix of 10+ tracks
-5. **Spotify** starts playback on your active device (shuffle on).
+   - **Multi** — genre/mood → search tracks, extend with recommendations, shuffle
+4. **Spotify** starts playback on your active device.
 
 ---
 
@@ -76,7 +41,7 @@ flowchart LR
 
 | Method | How |
 |--------|-----|
-| **Desktop app (Windows)** | Hold **Ctrl+Shift+Space** anywhere to speak; release to send. Runs in system tray. A floating pill visualizer appears while you speak. |
+| **Desktop app (Windows)** | Hold **Ctrl+Shift+Space** anywhere to speak; release to send. Runs in system tray. A floating pill visualizer appears at the bottom centre while you speak. Works even when the app is in the background. |
 | **Terminal** | Run `python -X utf8 voice_client.py`, then press Enter or **Ctrl+Shift+L** to record. |
 
 The desktop app records with MediaRecorder and sends audio to the backend; transcription uses OpenAI Whisper. The terminal client also uses Whisper.
@@ -98,9 +63,10 @@ Add `http://localhost:8000/callback` as a Redirect URI in your Spotify app setti
 
 ### Auth Flow
 
-1. Visit `http://localhost:8000/auth`
-2. Log in to Spotify and approve
-3. Token is saved in `.cache` for future requests
+1. Launch the app; it redirects to Spotify OAuth if not logged in.
+2. Log in to Spotify and approve.
+3. Token is saved in `.spotify_cache` for future requests.
+4. Use **Settings → Reauthorize Spotify** to re-link, or **Log out** to clear the token and re-auth on next launch.
 
 ---
 
@@ -110,16 +76,17 @@ Add `http://localhost:8000/callback` as a Redirect URI in your Spotify app setti
 ai_music_assistant/
 ├── backend/
 │   ├── main.py           # FastAPI routes
-│   ├── spotify_client.py # Spotify API
+│   ├── spotify_client.py # Spotify API (search, play, recommendations)
 │   ├── intent_engine.py  # OpenAI intent parser
 │   ├── database.py       # SQLAlchemy session
-│   ├── models.py         # MoodRequest, etc.
-│   └── config.py         # Env / API keys
+│   ├── models.py         # MoodRequest, ConnectedPlaylist
+│   └── config.py        # Env / API keys
 ├── frontend/             # React + Vite + Tailwind + Electron
-│   ├── electron/         # Main process, preload, global hotkey
+│   ├── electron/        # Main process, preload, global hotkey, pill overlay
 │   ├── src/
-│   │   ├── components/   # VoiceAssistant, FeatureGrid, Sidebar, Topbar
-│   │   └── pages/        # Home, PillOverlay (floating visualizer)
+│   │   ├── components/  # VoiceAssistant, FeatureGrid, Sidebar, Topbar
+│   │   ├── contexts/    # UserContext, PlaylistsContext
+│   │   └── pages/       # Home, TopTracks, ConnectedPlaylists, Settings, PillOverlay
 │   └── ...
 ├── voice_client.py       # Terminal voice input (Whisper)
 ├── package.json          # Root scripts (e.g. npm run dev)
@@ -133,12 +100,20 @@ ai_music_assistant/
 | Endpoint | Description |
 |----------|-------------|
 | `GET /auth` | Start Spotify OAuth |
+| `GET /callback` | OAuth callback (redirects to frontend) |
+| `POST /logout` | Clear Spotify token |
+| `GET /me` | Current user profile |
+| `GET /devices` | List playback devices |
 | `GET /top-tracks?limit=10` | Your top tracks |
+| `GET /my-spotify-playlists` | Your Spotify playlists |
+| `GET /connected-playlists` | Playlists connected for voice control |
+| `POST /connect-playlist` | Connect a playlist by name |
+| `DELETE /disconnect-playlist/{spotify_id}` | Disconnect a playlist |
 | `POST /play` | Natural language → play music |
 | `POST /play-track` | Play by Spotify URI |
-| `POST /transcribe` | Upload audio (e.g. webm); returns `{ "text": "..." }` via Whisper |
-| `GET /devices` | List playback devices |
+| `POST /transcribe` | Upload audio; returns `{ "text": "..." }` via Whisper |
 | `GET /latest-command` | Last voice/text command |
+| `GET /mood-requests` | History of commands and intent |
 
 ---
 

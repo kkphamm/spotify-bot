@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import tempfile
 from contextlib import asynccontextmanager
 from typing import Any
@@ -279,6 +280,38 @@ def _resolve_play_query(intent: dict, message: str) -> str:
     return query
 
 
+# Strip leading "play", "put on", etc. so "play my chill mix" still matches "My Chill Mix"
+_PLAY_PREFIX = re.compile(
+    r"^\s*(play|put on|start|listen to|queue|the playlist)\s+",
+    re.I,
+)
+
+
+def _find_connected_playlist_by_query(session, query: str):
+    """
+    Find a connected playlist whose name matches the query.
+    Tries exact match first, then any playlist where the query is contained in the name
+    or the name is contained in the query (so voice variation still matches).
+    Prefers exact match, then longest matching name.
+    """
+    if not query or not query.strip():
+        return None
+    q = _PLAY_PREFIX.sub("", query).lower().strip() or query.lower().strip()
+    all_playlists = list(session.execute(select(ConnectedPlaylist)).scalars().all())
+    if not all_playlists:
+        return None
+    exact = next((p for p in all_playlists if p.name and p.name.lower().strip() == q), None)
+    if exact:
+        return exact
+    matches = [
+        p for p in all_playlists
+        if p.name and (q in p.name.lower() or p.name.lower() in q)
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda p: len(p.name or ""))
+
+
 @app.post("/play-track")
 async def play_track_by_uri(body: PlayTrackRequest):
     """Play a specific track by Spotify URI (e.g. spotify:track:xxx)."""
@@ -313,14 +346,9 @@ async def play_track(body: PlayRequest):
     query = _resolve_play_query(intent, body.message)
     logger.info("Resolved intent: %s | query: %r", intent, query)
 
-    # Check for a matching connected playlist by name (case-insensitive)
+    # Check for a matching connected playlist by name (exact or contains)
     with get_session() as session:
-        match = session.execute(
-            select(ConnectedPlaylist).where(
-                func.lower(ConnectedPlaylist.name) == query.lower().strip()
-            )
-        )
-        playlist = match.scalars().first()
+        playlist = _find_connected_playlist_by_query(session, query)
     if playlist:
         ctx = spotify.play_playlist(playlist.uri, device_id=body.device_id)
         resp = {
@@ -334,6 +362,9 @@ async def play_track(body: PlayRequest):
         _save_mood_request(body.message, intent, playlist.name, mode="playlist")
         return resp
 
+    # NOTE: Spotify's search API rejects limits > 10 for this client
+    # with \"Invalid limit\", so we keep the limit at 10 here and rely on
+    # scoring + autoplay/recommendations to improve results.
     results = spotify.search_track(query, limit=10)
     if not results:
         raise HTTPException(status_code=404, detail=f"No tracks found for: '{query}'")
@@ -344,22 +375,29 @@ async def play_track(body: PlayRequest):
 
     def _score_track(t: dict[str, Any]) -> int:
         base_pop = t.get("popularity") or 0
-        bonus = 0
+        score = base_pop
         q_norm = _normalize(query)
         track_name = _normalize(t.get("name") or "")
-        artists_str = _normalize(" ".join(t.get("artists") or []))
 
-        # +50 if any artist name appears anywhere in the query
+        # 1. Artist Bonus
         for artist in (t.get("artists") or []):
             if _normalize(artist) in q_norm:
-                bonus += 50
+                score += 100
                 break
 
-        # +50 if the track name is a direct match to the (normalized) query
+        # 2. Title Match Bonus
         if track_name == q_norm:
-            bonus += 50
+            score += 50
+        elif track_name in q_norm or q_norm in track_name:
+            score += 20
 
-        return base_pop + bonus
+        # 3. Junk Penalty (crucial for filtering instrumentals/covers)
+        junk_keywords = ["instrumental", "karaoke", "cover", "sped up", "slowed", "live", "remix"]
+        for junk in junk_keywords:
+            if junk in track_name and junk not in q_norm:
+                score -= 200
+
+        return score
 
     results = sorted(results, key=_score_track, reverse=True)
 

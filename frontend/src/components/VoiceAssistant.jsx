@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 import { apiUrl } from '../api'
 
 const HOTKEY = 'Ctrl + Shift + Space'
@@ -26,6 +28,10 @@ export default function VoiceAssistant() {
   const audioChunksRef = useRef([])
   const recordingStartTimeRef = useRef(null)
   const maxVolumeRef = useRef(0)
+  const listeningRef = useRef(false)
+  const idleBufferRef = useRef(null)
+  const location = useLocation()
+  const isOnHome = location.pathname === '' || location.pathname === '/'
 
   const handleMicClick = () => {
     const { start, stop } = startStopRef.current
@@ -74,47 +80,7 @@ export default function VoiceAssistant() {
         bufferRef.current = new Uint8Array(analyser.frequencyBinCount)
         const source = audioContext.createMediaStreamSource(stream)
         source.connect(analyser)
-
-        function drawVisualizer() {
-          const canvas = canvasRef.current
-          const anal = analyserRef.current
-          const buffer = bufferRef.current
-          if (!canvas || !anal || !buffer) return
-          anal.getByteFrequencyData(buffer)
-          const peak = buffer.length ? Math.max(...buffer) : 0
-          if (peak > maxVolumeRef.current) maxVolumeRef.current = peak
-          if (window.electronAPI?.sendAudioData) {
-            const compressedData = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
-              .map((i) => buffer[i] ?? 0)
-              .map((v) => Math.max(4, (v / 255) * 24))
-            window.electronAPI.sendAudioData(compressedData)
-          }
-          const ctx = canvas.getContext('2d')
-          if (!ctx) return
-          const { width, height } = canvas
-          ctx.clearRect(0, 0, width, height)
-          const barCount = 16
-          const barWidth = width / barCount
-          const gap = 2
-          const slotWidth = barWidth - gap
-          const actualBarWidth = slotWidth * 0.4
-          const minBarHeight = actualBarWidth * 1.8
-          const centerY = height / 2
-          ctx.fillStyle = '#1DB954'
-          for (let i = 0; i < barCount; i++) {
-            const dataIndex = Math.floor((i / barCount) * buffer.length)
-            const value = buffer[dataIndex] ?? 0
-            const amplitude = Math.max(0, (value - 20) / 235)
-            const barHeight = Math.max(minBarHeight, amplitude * height * 0.52)
-            const x = i * barWidth + gap / 2 + (slotWidth - actualBarWidth) / 2
-            const y = centerY - barHeight / 2
-            ctx.beginPath()
-            ctx.roundRect(x, y, actualBarWidth, barHeight, actualBarWidth / 2)
-            ctx.fill()
-          }
-          requestRef.current = requestAnimationFrame(drawVisualizer)
-        }
-        drawVisualizer()
+        listeningRef.current = true
 
         const recorder = new MediaRecorder(stream)
         mediaRecorderRef.current = recorder
@@ -159,6 +125,7 @@ export default function VoiceAssistant() {
           analyserRef.current = null
           mediaRecorderRef.current = null
           setBrowserListening(false)
+          listeningRef.current = false
         }
         audioChunksRef.current = []
         recordingStartTimeRef.current = Date.now()
@@ -173,10 +140,7 @@ export default function VoiceAssistant() {
     }
 
     function stopListening() {
-      if (requestRef.current != null) {
-        cancelAnimationFrame(requestRef.current)
-        requestRef.current = null
-      }
+      listeningRef.current = false
       if (window.electronAPI?.sendAudioData) {
         window.electronAPI.sendAudioData(Array(10).fill(4))
       }
@@ -291,6 +255,67 @@ export default function VoiceAssistant() {
     return () => clearInterval(id)
   }, [])
 
+  useEffect(() => {
+    listeningRef.current = browserListening
+  }, [browserListening])
+
+  useEffect(() => {
+    if (!idleBufferRef.current) {
+      idleBufferRef.current = new Uint8Array(256)
+      idleBufferRef.current.fill(30)
+    }
+    let rafId
+    function loop() {
+      const anal = analyserRef.current
+      const listening = listeningRef.current
+      let buffer
+      if (listening && anal && bufferRef.current) {
+        anal.getByteFrequencyData(bufferRef.current)
+        buffer = bufferRef.current
+        const peak = buffer.length ? Math.max(...buffer) : 0
+        if (peak > maxVolumeRef.current) maxVolumeRef.current = peak
+        if (window.electronAPI?.sendAudioData) {
+          const compressedData = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+            .map((i) => buffer[i] ?? 0)
+            .map((v) => Math.max(4, (v / 255) * 24))
+          window.electronAPI.sendAudioData(compressedData)
+        }
+      } else {
+        buffer = idleBufferRef.current
+      }
+      const canvas = canvasRef.current
+      if (canvas && buffer) {
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          const { width, height } = canvas
+          ctx.clearRect(0, 0, width, height)
+          const barCount = 16
+          const barWidth = width / barCount
+          const gap = 2
+          const slotWidth = barWidth - gap
+          const actualBarWidth = slotWidth * 0.4
+          const minBarHeight = actualBarWidth * 1.8
+          const centerY = height / 2
+          ctx.fillStyle = '#1DB954'
+          for (let i = 0; i < barCount; i++) {
+            const dataIndex = Math.floor((i / barCount) * buffer.length)
+            const value = buffer[dataIndex] ?? 0
+            const amplitude = Math.max(0, (value - 20) / 235)
+            const barHeight = Math.max(minBarHeight, amplitude * height * 0.52)
+            const x = i * barWidth + gap / 2 + (slotWidth - actualBarWidth) / 2
+            const y = centerY - barHeight / 2
+            ctx.beginPath()
+            ctx.roundRect(x, y, actualBarWidth, barHeight, actualBarWidth / 2)
+            ctx.fill()
+          }
+        }
+      }
+      rafId = requestAnimationFrame(loop)
+    }
+    rafId = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(rafId)
+  }, [])
+
   async function sendToPlay(text) {
     if (window.electronAPI?.logToTerminal) {
       window.electronAPI.logToTerminal('\n🎙️ User said: "' + text.trim() + '"')
@@ -330,8 +355,9 @@ export default function VoiceAssistant() {
   }
 
   const showListening = processing || browserListening
+  const portalTarget = typeof document !== 'undefined' ? document.getElementById('voice-assistant-root') : null
 
-  return (
+  const ui = (
     <section className="bg-[#181818] rounded-xl sm:rounded-2xl p-5 sm:p-8 mb-5 sm:mb-8 border border-[#282828]">
       {/* Prominent hotkey call-to-action */}
       <div className="flex flex-col items-center gap-4 sm:gap-6 text-center mb-5 sm:mb-8">
@@ -414,4 +440,8 @@ export default function VoiceAssistant() {
       </div>
     </section>
   )
+
+  if (!isOnHome) return null
+  if (portalTarget) return createPortal(ui, portalTarget)
+  return ui
 }
