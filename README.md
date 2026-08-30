@@ -2,6 +2,8 @@
 
 Control Spotify with natural language. Use voice or text — the app parses your intent and plays the right music. Connect playlists by name for instant voice control (e.g. *"Play My Chill Mix"*).
 
+![Demo](docs/demo.gif)
+
 ---
 
 ## Quick Start
