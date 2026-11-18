@@ -1,9 +1,15 @@
-// In Electron (file:// or localhost), API calls go to backend directly
-const API_BASE = typeof window !== 'undefined' && window.electronAPI
-  ? 'http://localhost:8000'
-  : '/api'
+// The desktop app calls the local backend directly.
+const API_BASE = window.electronAPI ? 'http://127.0.0.1:8000' : '/api'
 
 export function apiUrl(path) {
   const clean = path.startsWith('/') ? path.slice(1) : path
-  return API_BASE.startsWith('http') ? `${API_BASE}/${clean}` : `${API_BASE}/${clean}`
+  return `${API_BASE}/${clean}`
+}
+
+export function signInToSpotify() {
+  if (window.electronAPI) {
+    window.electronAPI.openSpotifyLogin()
+  } else {
+    window.location.href = apiUrl('auth')
+  }
 }

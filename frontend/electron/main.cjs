@@ -1,5 +1,8 @@
-const { app, BrowserWindow, Tray, nativeImage, Menu, ipcMain, Notification, session, screen } = require('electron')
-const path = require('path')
+const { app, BrowserWindow, Tray, nativeImage, Menu, ipcMain, Notification, session, screen, dialog, shell, systemPreferences } = require('electron')
+const { spawn } = require('node:child_process')
+const { closeSync, openSync } = require('node:fs')
+const path = require('node:path')
+const { setTimeout: delay } = require('node:timers/promises')
 const { uIOhook, UiohookKey } = require('uiohook-napi')
 
 let mainWindow = null
@@ -8,10 +11,58 @@ let tray = null
 let isHotkeyDown = false
 let mainWindowRevealedByHotkey = false
 let overlayEnabled = true
+let hotkeyRegistered = false
+let backendProcess = null
 
-const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+const isMac = process.platform === 'darwin'
+const backendOrigin = 'http://127.0.0.1:8000'
 const WINDOW_WIDTH = 576
 const WINDOW_HEIGHT = 640
+
+async function backendIsReady() {
+  try {
+    const response = await fetch(`${backendOrigin}/health`, { signal: AbortSignal.timeout(750) })
+    return response.ok && (await response.json()).app === 'AI Music Assistant'
+  } catch {
+    return false
+  }
+}
+
+async function startLocalBackend() {
+  if (!isMac || !app.isPackaged || await backendIsReady()) return
+  const { backendProjectPath } = require('../package.json')
+  if (!backendProjectPath) throw new Error('Build the local Mac app with npm run electron:build:mac.')
+
+  const logPath = path.join(app.getPath('logs'), 'backend.log')
+  const log = openSync(logPath, 'a', 0o600)
+  let startupError
+  try {
+    backendProcess = spawn(path.join(backendProjectPath, '.venv/bin/python'), [
+      '-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', '8000', '--no-access-log',
+    ], {
+      cwd: backendProjectPath,
+      env: { ...process.env, SPOTIFY_CACHE_PATH: process.env.SPOTIFY_CACHE_PATH || '.cache-spotify-bot' },
+      stdio: ['ignore', log, log],
+    })
+    backendProcess.on('error', (error) => { startupError = error })
+  } finally {
+    closeSync(log)
+  }
+
+  const deadline = Date.now() + 10000
+  while (Date.now() < deadline) {
+    if (startupError) throw startupError
+    if (backendProcess.exitCode !== null || backendProcess.signalCode !== null) break
+    if (await backendIsReady()) return
+    await delay(200)
+  }
+  throw new Error(`The backend could not start. See ${logPath}.`)
+}
+
+function showMainWindow() {
+  mainWindow?.show()
+  mainWindow?.focus()
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -44,6 +95,8 @@ function createWindow() {
     mainWindow = null
   })
 
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
 }
 
@@ -58,16 +111,11 @@ function createTray() {
   tray = new Tray(trayIcon)
 
   tray.setToolTip('AI Music Assistant')
-  tray.on('double-click', () => {
-    if (mainWindow) {
-      mainWindow.show()
-      mainWindow.focus()
-    }
-  })
+  tray.on('double-click', showMainWindow)
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Show', click: () => { mainWindow?.show(); mainWindow?.focus() } },
-      { label: 'Quit', click: () => { app.isQuitting = true; app.quit() } },
+      { label: 'Show', click: showMainWindow },
+      { label: 'Quit', click: () => app.quit() },
     ])
   )
 }
@@ -112,19 +160,19 @@ function createOverlayWindow() {
   overlayWindow.loadFile(path.join(__dirname, '../dist/index.html'), { hash: '/overlay' })
 }
 
-function registerHoldToTalkHotkey() {
+function registerHoldToTalkHotkey(promptForAccess = false) {
+  if (hotkeyRegistered || (isMac && !systemPreferences.isTrustedAccessibilityClient(promptForAccess))) return
   const pressedKeys = new Set()
+  const primaryKeys = isMac ? [UiohookKey.Meta, UiohookKey.MetaRight] : [UiohookKey.Ctrl, UiohookKey.CtrlRight]
+  const isHeld = () => pressedKeys.has(UiohookKey.Space)
+    && primaryKeys.some((key) => pressedKeys.has(key))
+    && (pressedKeys.has(UiohookKey.Shift) || pressedKeys.has(UiohookKey.ShiftRight))
 
   uIOhook.on('keydown', (e) => {
     pressedKeys.add(e.keycode)
 
-    const hasSpace = pressedKeys.has(UiohookKey.Space)
-    const hasCtrl = pressedKeys.has(UiohookKey.Ctrl) || pressedKeys.has(UiohookKey.CtrlRight)
-    const hasShift = pressedKeys.has(UiohookKey.Shift) || pressedKeys.has(UiohookKey.ShiftRight)
-
-    if (hasSpace && hasCtrl && hasShift && !isHotkeyDown) {
+    if (isHeld() && !isHotkeyDown) {
       isHotkeyDown = true
-      console.log('hotkey-down: Ctrl+Shift+Space')
       if (overlayEnabled && overlayWindow && !overlayWindow.isDestroyed()) {
         overlayWindow.setAlwaysOnTop(true, 'floating')
         overlayWindow.showInactive()
@@ -145,34 +193,24 @@ function registerHoldToTalkHotkey() {
   uIOhook.on('keyup', (e) => {
     pressedKeys.delete(e.keycode)
 
-    if (isHotkeyDown) {
-      const hasSpace = pressedKeys.has(UiohookKey.Space)
-      const hasCtrl = pressedKeys.has(UiohookKey.Ctrl) || pressedKeys.has(UiohookKey.CtrlRight)
-      const hasShift = pressedKeys.has(UiohookKey.Shift) || pressedKeys.has(UiohookKey.ShiftRight)
-
-      const missingSpace = !hasSpace
-      const missingBothCtrls = !hasCtrl
-      const missingBothShifts = !hasShift
-
-      if (missingSpace || missingBothCtrls || missingBothShifts) {
-        isHotkeyDown = false
-        console.log('hotkey-up: Ctrl+Shift+Space released')
-        if (overlayEnabled && overlayWindow && !overlayWindow.isDestroyed()) {
-          overlayWindow.webContents.send('audio-data', Array(10).fill(4))
-          if (overlayWindow.isVisible()) overlayWindow.hide()
-        }
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('hotkey-up')
-          if (mainWindowRevealedByHotkey) {
-            if (mainWindow.isVisible() && !mainWindow.isFocused()) mainWindow.hide()
-            mainWindowRevealedByHotkey = false
-          }
+    if (isHotkeyDown && !isHeld()) {
+      isHotkeyDown = false
+      if (overlayEnabled && overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.webContents.send('audio-data', Array(10).fill(4))
+        if (overlayWindow.isVisible()) overlayWindow.hide()
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('hotkey-up')
+        if (mainWindowRevealedByHotkey) {
+          if (mainWindow.isVisible() && !mainWindow.isFocused()) mainWindow.hide()
+          mainWindowRevealedByHotkey = false
         }
       }
     }
   })
 
   uIOhook.start()
+  hotkeyRegistered = true
 }
 
 function showCommandToast(resolvedAction) {
@@ -189,6 +227,12 @@ function showCommandToast(resolvedAction) {
 }
 
 function registerIpcHandlers() {
+  ipcMain.on('spotify-login', (event) => {
+    if (event.sender !== mainWindow?.webContents) return
+    shell.openExternal(`${backendOrigin}/auth?desktop=true`).catch(() => {
+      dialog.showErrorBox('Spotify sign-in', 'The sign-in page could not be opened in your browser.')
+    })
+  })
   ipcMain.on('command-processed', (_event, resolvedAction) => {
     showCommandToast(resolvedAction)
   })
@@ -208,21 +252,29 @@ function registerIpcHandlers() {
   })
 }
 
-app.whenReady().then(() => {
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission === 'media') {
-      callback(true)
-    } else {
-      callback(false)
-    }
-  })
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => permission === 'media')
+const ownsInstance = app.requestSingleInstanceLock()
+if (!ownsInstance) app.quit()
+app.on('second-instance', showMainWindow)
+app.on('activate', showMainWindow)
+app.on('browser-window-focus', () => {
+  if (isMac) registerHoldToTalkHotkey()
+})
 
+app.whenReady().then(async () => {
+  if (!ownsInstance) return
+  await startLocalBackend()
+  const allowMedia = (contents, permission) => contents === mainWindow?.webContents && permission === 'media'
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => callback(allowMedia(contents, permission)))
+  session.defaultSession.setPermissionCheckHandler(allowMedia)
+
+  registerIpcHandlers()
   createWindow()
   createOverlayWindow()
   createTray()
-  registerHoldToTalkHotkey()
-  registerIpcHandlers()
+  registerHoldToTalkHotkey(true)
+}).catch((error) => {
+  dialog.showErrorBox('Spotify Bot could not start', error.message)
+  app.quit()
 })
 
 app.on('window-all-closed', () => {
@@ -231,8 +283,8 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('will-quit', () => {
-  try {
-    uIOhook.stop()
-  } catch (_) {}
+app.on('before-quit', () => {
+  app.isQuitting = true
+  if (hotkeyRegistered) uIOhook.stop()
+  backendProcess?.kill()
 })

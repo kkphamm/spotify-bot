@@ -20,7 +20,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from backend.config import OPENAI_API_KEY
 
-SAMPLE_RATE      = 16000   # Hz — Whisper works best at 16 kHz
+SAMPLE_RATE      = 16000   # Hz
 CHANNELS         = 1
 CHUNK            = 512     # Smaller chunks = finer silence detection
 OUTPUT_FILE      = "input.wav"
@@ -194,10 +194,10 @@ def record_until_silence(
 
 
 def transcribe_audio(file_path: str) -> str:
-    """Transcribe a WAV file to text using OpenAI's whisper-1 model."""
+    """Transcribe a WAV file using OpenAI's speech-to-text API."""
     client = OpenAI(api_key=OPENAI_API_KEY)
     with open(file_path, "rb") as f:
-        result = client.audio.transcriptions.create(model="whisper-1", file=f)
+        result = client.audio.transcriptions.create(model="gpt-transcribe", file=f)
     return result.text
 
 

@@ -1,13 +1,15 @@
 import logging
 import os
 import re
+import secrets
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from openai import OpenAI
 from pydantic import BaseModel
 
@@ -32,6 +34,7 @@ async def lifespan(app: FastAPI):
     init_db()
     app.state.spotify = SpotifyClient()
     app.state.intent = IntentEngine()
+    app.state.spotify_sign_in = None
     logger.info("Spotify client and intent engine initialized.")
     yield
     logger.info("Shutting down AI Music Assistant.")
@@ -64,23 +67,30 @@ async def health_check():
 
 
 @app.get("/auth")
-async def auth():
+async def auth(desktop: bool = False):
     """Redirect the user to Spotify's OAuth authorization page."""
     spotify: SpotifyClient = app.state.spotify
-    auth_url = spotify.authenticate()
-    return RedirectResponse(url=auth_url)
+    state = secrets.token_urlsafe(32)
+    app.state.spotify_sign_in = (state, desktop, time.monotonic() + 600)
+    return RedirectResponse(url=spotify.authenticate(state))
 
 
 @app.get("/callback")
-async def callback(request: Request, code: str | None = None, error: str | None = None):
+async def callback(code: str | None = None, error: str | None = None, state: str = ""):
     """Spotify OAuth callback — exchanges the authorization code for tokens."""
+    expected_state, desktop, expires_at = app.state.spotify_sign_in or ("", False, 0)
+    if not state or time.monotonic() > expires_at or not secrets.compare_digest(state.encode(), expected_state.encode()):
+        raise HTTPException(status_code=400, detail="Spotify sign-in expired. Start again from the app.")
+    app.state.spotify_sign_in = None
     if error:
         raise HTTPException(status_code=400, detail=f"Spotify auth error: {error}")
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code.")
     spotify: SpotifyClient = app.state.spotify
-    spotify.auth_manager.get_access_token(code, as_dict=False)
+    spotify.auth_manager.get_access_token(code, as_dict=False, check_cache=False)
     logger.info("Spotify OAuth token obtained via callback.")
+    if desktop:
+        return PlainTextResponse("Spotify is connected. You can close this tab and return to Spotify Bot.")
     frontend_base = FRONTEND_URL.rstrip("/")
     return RedirectResponse(url=f"{frontend_base}/#/")
 
@@ -91,6 +101,7 @@ async def logout():
     spotify: SpotifyClient = app.state.spotify
     spotify.clear_cache()
     app.state.spotify = SpotifyClient()
+    app.state.spotify_sign_in = None
     logger.info("User logged out; Spotify client reset.")
     return {"status": "logged_out"}
 
@@ -215,7 +226,7 @@ async def disconnect_playlist(spotify_id: str):
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
-    """Accept an audio blob, transcribe with OpenAI Whisper, return { text }."""
+    """Transcribe an uploaded audio file and return the text."""
     tmp_path = None
     try:
         content = await file.read()
@@ -224,7 +235,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
             tmp_path = tmp.name
         client = OpenAI(api_key=OPENAI_API_KEY)
         with open(tmp_path, "rb") as f:
-            result = client.audio.transcriptions.create(model="whisper-1", file=f)
+            result = client.audio.transcriptions.create(model="gpt-transcribe", file=f)
         return {"text": result.text}
     except Exception as exc:
         logger.exception("Transcribe failed: %s", exc)

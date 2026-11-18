@@ -8,7 +8,7 @@ import ConnectedPlaylists from './pages/ConnectedPlaylists'
 import PillOverlay from './pages/PillOverlay'
 import { PlaylistsProvider } from './contexts/PlaylistsContext'
 import { UserProvider } from './contexts/UserContext'
-import { apiUrl } from './api'
+import { apiUrl, signInToSpotify } from './api'
 
 const STORAGE_KEY = 'pillOverlayEnabled'
 
@@ -29,20 +29,25 @@ function MainLayout() {
   const [user, setUser] = useState(null)
 
   useEffect(() => {
-    fetch(apiUrl('me'))
-      .then(async (res) => {
-        if (res.status === 401) {
+    async function checkSpotify() {
+      try {
+        const response = await fetch(apiUrl('me'))
+        if (response.status === 401) {
+          setUser(null)
           setAuthStatus('unauthenticated')
-          window.location.href = apiUrl('auth')
+          if (!window.electronAPI) signInToSpotify()
           return
         }
-        setAuthStatus('authenticated')
-        if (res.ok) {
-          const data = await res.json().catch(() => null)
-          if (data) setUser(data)
-        }
-      })
-      .catch(() => setAuthStatus('authenticated'))
+        if (response.ok) setUser(await response.json())
+      } catch {
+        // Show the app so the user can retry if the backend is unavailable.
+      }
+      setAuthStatus('authenticated')
+    }
+
+    checkSpotify()
+    if (window.electronAPI) window.addEventListener('focus', checkSpotify)
+    return () => window.removeEventListener('focus', checkSpotify)
   }, [])
 
   if (authStatus === 'checking') {
@@ -53,6 +58,18 @@ function MainLayout() {
           <p className="text-sm">Checking Spotify…</p>
         </div>
       </div>
+    )
+  }
+
+  if (authStatus === 'unauthenticated' && window.electronAPI) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#121212] px-6 text-center text-white">
+        <h1 className="text-xl font-semibold">Connect Spotify</h1>
+        <p className="text-sm text-[#b3b3b3]">Sign in in your browser, then return to Spotify Bot.</p>
+        <button type="button" onClick={signInToSpotify} className="rounded-full bg-[#1DB954] px-5 py-2.5 text-sm font-semibold text-black hover:bg-[#1ed760]">
+          Sign in to Spotify
+        </button>
+      </main>
     )
   }
 

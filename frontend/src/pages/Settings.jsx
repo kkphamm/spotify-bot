@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { apiUrl } from '../api'
+import { apiUrl, signInToSpotify } from '../api'
+import { holdToTalkLabel } from '../hotkey'
 
 const STORAGE_KEY = 'pillOverlayEnabled'
 
@@ -44,7 +45,7 @@ export default function Settings() {
           />
         </label>
         <p className="text-[#b3b3b3] text-sm">
-          When enabled, a small pill appears at the bottom centre of the screen while you hold Ctrl+Shift+Space to speak.
+          When enabled, a small pill appears at the bottom centre of the screen while you hold {holdToTalkLabel} to speak.
         </p>
 
         <div className="pt-6 border-t border-[#282828]">
@@ -72,7 +73,7 @@ export default function Settings() {
           </p>
           <button
             type="button"
-            onClick={() => { window.location.href = apiUrl('auth') }}
+            onClick={signInToSpotify}
             className="px-4 py-2 rounded-full bg-[#1DB954] hover:bg-[#1ed760] text-black text-sm font-semibold transition-colors mt-2"
           >
             Reauthorize Spotify

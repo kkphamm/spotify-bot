@@ -4,7 +4,6 @@ uvicorn[standard]
 spotipy
 python-dotenv
 openai
-openai-whisper
 pyaudio
 requests
 pydantic

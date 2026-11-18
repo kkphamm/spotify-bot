@@ -111,7 +111,7 @@ Always call the resolve_intent function. Never reply with plain text."""
 class IntentEngine:
     def __init__(self):
         self.client = OpenAI(api_key=OPENAI_API_KEY)
-        self.model = "gpt-4o-mini"
+        self.model = "gpt-6-luna"
 
     def parse(self, user_input: str) -> dict[str, Any]:
         """
@@ -143,6 +143,7 @@ class IntentEngine:
     def _parse_with_openai(self, user_input: str) -> dict[str, Any]:
         response = self.client.chat.completions.create(
             model=self.model,
+            reasoning_effort="none",  # Required for Luna's function calling.
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_input},

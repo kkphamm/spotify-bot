@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "electron:dev": "concurrently \"npm run build -- --watch\" \"wait-on dist/index.html && electron .\"",
     "electron:build": "npm run build && electron-builder",
+    "electron:build:mac": "npm run build && electron-builder --mac dir --config.productName='Spotify Bot' --config.mac.identity=null --config.npmRebuild=false --config.afterPack=electron/sign-local-mac.cjs --config.extraMetadata.backendProjectPath=\"$(cd .. && pwd)\"",
     "electron:start": "electron ."
   },
   "dependencies": {
@@ -44,6 +45,11 @@
       "dist/**/*",
       "electron/**/*"
     ],
+    "mac": {
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Spotify Bot uses the microphone to hear your music commands."
+      }
+    },
     "win": {
       "target": "nsis"
     }

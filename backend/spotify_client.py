@@ -46,9 +46,9 @@ class SpotifyClient:
         """Return True if a token is cached, without prompting. Use to avoid spotipy's interactive CLI prompt."""
         return self.auth_manager.get_cached_token() is not None
 
-    def authenticate(self) -> str:
+    def authenticate(self, state: str) -> str:
         """Return the Spotify OAuth authorization URL for the user to visit."""
-        auth_url = self.auth_manager.get_authorize_url()
+        auth_url = self.auth_manager.get_authorize_url(state=state)
         logger.info("Spotify auth URL generated.")
         return auth_url
 

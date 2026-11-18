@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { apiUrl } from '../api'
+import { apiUrl, signInToSpotify } from '../api'
 import { useUser } from '../contexts/UserContext'
 
 export default function Topbar({ title }) {
@@ -21,7 +21,8 @@ export default function Topbar({ title }) {
       await fetch(apiUrl('logout'), { method: 'POST' })
     } catch (_) {}
     setMenuOpen(false)
-    window.location.href = apiUrl('auth')
+    if (window.electronAPI) window.location.reload()
+    else signInToSpotify()
   }
 
   const imageUrl = user?.images?.[0]

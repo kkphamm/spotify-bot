@@ -22,14 +22,21 @@ npm run dev
 # Terminal 2: cd frontend && npm install && npm run electron:dev
 ```
 
-First time: `cd frontend && npm install`. The app will redirect you to Spotify login. Hold **Ctrl+Shift+Space** anywhere to speak (global hotkey); release to send.
+First time, run `npm ci` in `frontend` and connect your Spotify account in the app.
+
+### macOS Desktop
+
+With the project's backend installed in `.venv`, run `npm run electron:build:mac` from `frontend`.
+Open `Spotify Bot.app` in `frontend/release/mac-arm64` on Apple Silicon or `frontend/release/mac` on Intel. The app starts the backend from this checkout and uses its `.env`.
+
+Enable **Spotify Bot** in **System Settings → Privacy & Security → Accessibility** for the global hotkey. Allow microphone access when prompted.
 
 ---
 
 ## How It Works
 
 1. **You** speak or type a command (e.g. *"Play lo-fi beats"*, *"Play My Chill Mix"*).
-2. **Intent Engine** (OpenAI) extracts the action and search query.
+2. **Intent Engine** (GPT-6 Luna) extracts the action and search query.
 3. **Playback mode** is chosen:
    - **Connected Playlist** — query matches a playlist you connected → play that playlist
    - **Track** — you named a song → play that track (with autoplay recommendations)
@@ -43,10 +50,10 @@ First time: `cd frontend && npm install`. The app will redirect you to Spotify l
 
 | Method | How |
 |--------|-----|
-| **Desktop app (Windows)** | Hold **Ctrl+Shift+Space** anywhere to speak; release to send. Runs in system tray. A floating pill visualizer appears at the bottom centre while you speak. Works even when the app is in the background. |
+| **Desktop app** | Hold **⌘⇧Space** on macOS or **Ctrl+Shift+Space** on Windows. Release to send. The pill overlay appears while you speak, including when the app is in the background. |
 | **Terminal** | Run `python -X utf8 voice_client.py`, then press Enter or **Ctrl+Shift+L** to record. |
 
-The desktop app records with MediaRecorder and sends audio to the backend; transcription uses OpenAI Whisper. The terminal client also uses Whisper.
+The desktop app records with MediaRecorder and sends audio to the backend. Both the desktop app and terminal client use OpenAI GPT-Transcribe.
 
 ---
 
@@ -58,16 +65,17 @@ The desktop app records with MediaRecorder and sends audio to the backend; trans
 |-----|-------|
 | `SPOTIFY_CLIENT_ID` | [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) |
 | `SPOTIFY_CLIENT_SECRET` | Same app → Settings |
-| `SPOTIFY_REDIRECT_URI` | `http://localhost:8000/callback` |
+| `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8000/callback` |
+| `SPOTIFY_CACHE_PATH` | `.cache-spotify-bot` keeps OAuth tokens in an ignored file |
 | `OPENAI_API_KEY` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 
-Add `http://localhost:8000/callback` as a Redirect URI in your Spotify app settings.
+Add `http://127.0.0.1:8000/callback` as a Redirect URI in your Spotify app settings.
 
 ### Auth Flow
 
-1. Launch the app; it redirects to Spotify OAuth if not logged in.
-2. Log in to Spotify and approve.
-3. Token is saved in `.spotify_cache` for future requests.
+1. Launch the app and choose **Sign in to Spotify** if prompted.
+2. Sign in with Spotify and approve, then return to the app.
+3. The OAuth token is saved to `SPOTIFY_CACHE_PATH` for future requests.
 4. Use **Settings → Reauthorize Spotify** to re-link, or **Log out** to clear the token and re-auth on next launch.
 
 ---
@@ -90,7 +98,7 @@ ai_music_assistant/
 │   │   ├── contexts/    # UserContext, PlaylistsContext
 │   │   └── pages/       # Home, TopTracks, ConnectedPlaylists, Settings, PillOverlay
 │   └── ...
-├── voice_client.py       # Terminal voice input (Whisper)
+├── voice_client.py       # Terminal voice input
 ├── package.json          # Root scripts (e.g. npm run dev)
 └── .env                  # API keys
 ```
@@ -113,7 +121,7 @@ ai_music_assistant/
 | `DELETE /disconnect-playlist/{spotify_id}` | Disconnect a playlist |
 | `POST /play` | Natural language → play music |
 | `POST /play-track` | Play by Spotify URI |
-| `POST /transcribe` | Upload audio; returns `{ "text": "..." }` via Whisper |
+| `POST /transcribe` | Upload audio for GPT-Transcribe and receive `{ "text": "..." }` |
 | `GET /latest-command` | Last voice/text command |
 | `GET /mood-requests` | History of commands and intent |
 
@@ -122,5 +130,5 @@ ai_music_assistant/
 ## Tech Stack
 
 - **Backend:** FastAPI, Spotipy, OpenAI, SQLAlchemy
-- **Frontend:** React, Vite, Tailwind, Electron (Windows desktop)
-- **Voice:** MediaRecorder + OpenAI Whisper (desktop); Whisper (terminal)
+- **Frontend:** React, Vite, Tailwind, Electron (macOS and Windows desktop)
+- **Voice:** MediaRecorder (desktop), PyAudio (terminal), OpenAI GPT-Transcribe

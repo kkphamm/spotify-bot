@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { apiUrl } from '../api'
+import { holdToTalkLabel, isMac } from '../hotkey'
 
-const HOTKEY = 'Ctrl + Shift + Space'
 const POLL_INTERVAL_MS = 2500
 const PULSE_DURATION_MS = 5000  // Glow/pulse after command is sent
 const MIN_RECORDING_MS = 1500   // Require at least ~1.5s of recording
@@ -15,11 +15,9 @@ export default function VoiceAssistant() {
   const [browserListening, setBrowserListening] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
-  const startedByHoldRef = useRef(false)
   const hotkeyDownRef = useRef(false)
   const startStopRef = useRef({ start: null, stop: null })
   const canvasRef = useRef(null)
-  const requestRef = useRef(null)
   const audioContextRef = useRef(null)
   const analyserRef = useRef(null)
   const mediaStreamRef = useRef(null)
@@ -36,7 +34,7 @@ export default function VoiceAssistant() {
   const handleMicClick = () => {
     const { start, stop } = startStopRef.current
     if (!start || !stop) return
-    if (mediaRecorderRef.current?.state === 'recording' && startedByHoldRef.current) {
+    if (mediaRecorderRef.current?.state === 'recording') {
       stop()
     } else {
       hotkeyDownRef.current = false
@@ -45,7 +43,9 @@ export default function VoiceAssistant() {
   }
 
   useEffect(() => {
-    async function sendAudioToWhisper(blob) {
+    let recordingRequest = 0
+
+    async function sendAudioForTranscription(blob) {
       setSending(true)
       try {
         const formData = new FormData()
@@ -66,9 +66,14 @@ export default function VoiceAssistant() {
 
     async function startListening() {
       if (mediaRecorderRef.current?.state === 'recording') return
+      const request = ++recordingRequest
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        if (request !== recordingRequest) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
         mediaStreamRef.current = stream
         const AudioContextClass = window.AudioContext || window.webkitAudioContext
         const audioContext = new AudioContextClass()
@@ -113,7 +118,7 @@ export default function VoiceAssistant() {
             return
           }
           const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-          sendAudioToWhisper(audioBlob)
+          sendAudioForTranscription(audioBlob)
           if (mediaStreamRef.current) {
             mediaStreamRef.current.getTracks().forEach((t) => t.stop())
           }
@@ -131,15 +136,15 @@ export default function VoiceAssistant() {
         recordingStartTimeRef.current = Date.now()
         maxVolumeRef.current = 0
         recorder.start()
-        startedByHoldRef.current = true
         setBrowserListening(true)
         setError(null)
-      } catch (err) {
-        setError('Could not access microphone.')
+      } catch {
+        if (request === recordingRequest) setError('Could not access microphone.')
       }
     }
 
     function stopListening() {
+      recordingRequest += 1
       listeningRef.current = false
       if (window.electronAPI?.sendAudioData) {
         window.electronAPI.sendAudioData(Array(10).fill(4))
@@ -150,55 +155,40 @@ export default function VoiceAssistant() {
       hotkeyDownRef.current = false
     }
 
+    function onHotkeyDown() {
+      if (hotkeyDownRef.current) return
+      hotkeyDownRef.current = true
+      startListening()
+    }
+
+    function onHotkeyUp() {
+      if (hotkeyDownRef.current) stopListening()
+    }
+
     function onKeyDown(e) {
-      const isHotkey = e.code === 'Space' && e.ctrlKey && e.shiftKey
+      const isHotkey = e.code === 'Space' && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey
       if (isHotkey) {
         // Prevent browser default (scroll, etc.)
         e.preventDefault()
         e.stopPropagation()
 
-        // Fallback: handle in-window when Electron is not present
-        if (!window.electronAPI) {
-          if (hotkeyDownRef.current) return // key repeat
-          hotkeyDownRef.current = true
-          startListening()
-        }
+        onHotkeyDown()
       }
     }
 
     function onKeyUp(e) {
       const isSpace = e.code === 'Space'
-      const isCtrl = e.key === 'Control'
+      const isPrimaryModifier = e.key === (isMac ? 'Meta' : 'Control')
       const isShift = e.key === 'Shift'
-      if (isSpace || isCtrl || isShift) {
-        if (mediaRecorderRef.current?.state === 'recording' && startedByHoldRef.current) {
-          stopListening()
-        }
-        hotkeyDownRef.current = false
-      }
+      if (isSpace || isPrimaryModifier || isShift) onHotkeyUp()
     }
 
     startStopRef.current = { start: startListening, stop: stopListening }
 
-    // Global Electron hotkey (preferred)
-    let offHotkeyDown
-    let offHotkeyUp
-    if (window.electronAPI?.onHotkeyDown) {
-      offHotkeyDown = window.electronAPI.onHotkeyDown(() => {
-        hotkeyDownRef.current = true
-        const { start } = startStopRef.current
-        if (start) start()
-      })
-    }
-    if (window.electronAPI?.onHotkeyUp) {
-      offHotkeyUp = window.electronAPI.onHotkeyUp(() => {
-        hotkeyDownRef.current = false
-        const { stop } = startStopRef.current
-        if (stop) stop()
-      })
-    }
+    const offHotkeyDown = window.electronAPI?.onHotkeyDown(onHotkeyDown)
+    const offHotkeyUp = window.electronAPI?.onHotkeyUp(onHotkeyUp)
 
-    // Browser key events as fallback (and to suppress Ctrl+Shift+Space default)
+    // Browser key events as a fallback and to suppress the default shortcut action.
     window.addEventListener('keydown', onKeyDown, true)
     window.addEventListener('keyup', onKeyUp, true)
 
@@ -214,6 +204,7 @@ export default function VoiceAssistant() {
     document.addEventListener('keydown', onFirstInteraction, { once: true })
 
     return () => {
+      recordingRequest += 1
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('keyup', onKeyUp, true)
       if (offHotkeyDown) offHotkeyDown()
@@ -391,12 +382,12 @@ export default function VoiceAssistant() {
 
         <div>
           <p className="text-white text-lg sm:text-2xl font-bold mb-1">
-            {browserListening ? 'Listening…' : sending ? 'Playing…' : `Hold ${HOTKEY} to speak`}
+            {browserListening ? 'Listening…' : sending ? 'Playing…' : `Hold ${holdToTalkLabel} to speak`}
           </p>
           <p className="text-[#b3b3b3] text-sm">
             {browserListening
-              ? 'Say your command, then release Ctrl+Shift+Space'
-              : 'Hold Ctrl+Shift+Space while you speak, then release to send. Or click the mic.'}
+              ? `Say your command, then release ${holdToTalkLabel}`
+              : `Hold ${holdToTalkLabel} while you speak, then release to send. Or click the mic.`}
           </p>
         </div>
       </div>
@@ -415,7 +406,7 @@ export default function VoiceAssistant() {
 
         {requests.length === 0 ? (
           <p className="text-[#535353] text-sm italic">
-            Hold Ctrl+Shift+Space to speak, or click the mic.
+            Hold {holdToTalkLabel} to speak, or click the mic.
           </p>
         ) : (
           <ul className="space-y-3 sm:space-y-4">

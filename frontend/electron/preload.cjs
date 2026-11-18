@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('command-processed', resolvedAction)
   },
   logToTerminal: (message) => ipcRenderer.send('log-to-terminal', message),
+  openSpotifyLogin: () => ipcRenderer.send('spotify-login'),
   sendAudioData: (data) => ipcRenderer.send('audio-data', data),
   setOverlayEnabled: (enabled) => ipcRenderer.send('set-overlay-enabled', enabled),
   onAudioData: (callback) => {
@@ -28,4 +29,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('overlay-shown', handler)
   },
   isElectron: true,
+  isMac: process.platform === 'darwin',
 })
